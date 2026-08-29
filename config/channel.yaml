@@ -1,0 +1,50 @@
+channel:
+  name: OTTAM
+  handle: "@ottam.official"
+  youtube_url: "https://youtube.com/@ottam.official"
+  niche: "Psychology & Human Behavior"
+  format: "Long-form stickman animation"
+
+style_authority:
+  precedence:
+    - live_youtube_channel
+    - uploaded_ottam_project_instructions_v2_3
+    - verified_previous_episode_assets
+  policy: "Do not invent undocumented fonts, colors, layouts, character rules, or thumbnail conventions. Learn/lock them only from verified OTTAM references."
+
+video:
+  aspect_ratio: "16:9"
+  width: 1920
+  height: 1080
+  container: mp4
+  video_codec: h264
+  audio_codec: aac
+
+visuals:
+  format: "stickman animation"
+  generation:
+    provider: magnific
+    model: "gpt-2"
+    aspect_ratio: "16:9"
+    quality: "low"
+    count: 1
+  scene_policy:
+    master_timeline: narration
+    fixed_scene_count: false
+    regenerate_failed_scene_only: true
+
+thumbnail:
+  reference_source: "live_youtube_channel"
+  generated_text_inside_ai_image: false
+  typography_mode: "deterministic_overlay"
+  require_style_match_gate: true
+
+narration:
+  provider: kokoro_modal
+  endpoint: "https://theplantrastore--kokoro-tts-web.modal.run/"
+  master_timeline: true
+
+publishing:
+  mode: scheduled
+  require_all_quality_gates: true
+  allow_publish_on_failed_gate: false
