@@ -38,8 +38,6 @@ class EpisodeState:
 
 
 class StateStore:
-    """File-backed checkpoint store. Replaceable with Postgres without changing orchestration API."""
-
     def __init__(self, root: Path):
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
@@ -72,19 +70,14 @@ class QuarantineEpisode(RuntimeError):
 
 
 class Orchestrator:
-    def __init__(
-        self,
-        store: StateStore,
-        handlers: dict[Stage, Callable[[str], None]],
-        max_stage_attempts: int = 4,
-    ):
+    def __init__(self, store: StateStore, handlers: dict[Stage, Callable[[str], None]], max_stage_attempts: int = 4):
         self.store = store
         self.handlers = handlers
         self.max_stage_attempts = max_stage_attempts
 
-    def run(self, episode_id: str) -> EpisodeState:
+    def run(self, episode_id: str, stop_after: Stage | None = None) -> EpisodeState:
         state = self.store.load(episode_id)
-        if state.quarantined:
+        if state.quarantined or state.status == "VIDEO_READY":
             return state
 
         start_index = STAGE_ORDER.index(state.stage)
@@ -92,7 +85,6 @@ class Orchestrator:
             state.stage = stage
             state.status = "RUNNING"
             self.store.save(state)
-
             try:
                 self._run_stage_with_recovery(state)
             except QuarantineEpisode as exc:
@@ -109,7 +101,12 @@ class Orchestrator:
             next_index = STAGE_ORDER.index(stage) + 1
             if next_index < len(STAGE_ORDER):
                 state.stage = STAGE_ORDER[next_index]
+            else:
+                state.status = "VIDEO_READY"
             self.store.save(state)
+
+            if stop_after == stage:
+                return state
 
         state.status = "VIDEO_READY"
         self.store.save(state)
@@ -119,7 +116,6 @@ class Orchestrator:
         handler = self.handlers.get(state.stage)
         if handler is None:
             raise QuarantineEpisode(f"No handler registered for stage {state.stage.value}")
-
         for attempt in range(1, self.max_stage_attempts + 1):
             state.attempts = attempt
             self.store.save(state)
@@ -129,15 +125,5 @@ class Orchestrator:
             except RecoverableStageError as exc:
                 state.last_error = str(exc)
                 self.store.save(state)
-                log.warning(
-                    "Recoverable failure episode=%s stage=%s attempt=%s/%s error=%s",
-                    state.episode_id,
-                    state.stage.value,
-                    attempt,
-                    self.max_stage_attempts,
-                    exc,
-                )
-
-        raise QuarantineEpisode(
-            f"Stage {state.stage.value} exhausted {self.max_stage_attempts} recovery attempts"
-        )
+                log.warning("Recoverable failure episode=%s stage=%s attempt=%s/%s error=%s", state.episode_id, state.stage.value, attempt, self.max_stage_attempts, exc)
+        raise QuarantineEpisode(f"Stage {state.stage.value} exhausted {self.max_stage_attempts} recovery attempts")
