@@ -1,9 +1,7 @@
 name: Magnific MCP GPT-2 User Smoke
 
 on:
-  push:
-    branches:
-      - test/magnific-mcp-smoke
+  workflow_dispatch:
 
 concurrency:
   group: magnific-gpt2-user-smoke
