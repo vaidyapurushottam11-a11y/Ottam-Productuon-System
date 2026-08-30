@@ -104,21 +104,79 @@ TOPIC:\n{topic}\n\nRESEARCH:\n{research}"""
         script = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.68, max_tokens=6500)
         (episode_dir / "script.txt").write_text(script.strip() + "\n", encoding="utf-8")
 
-    def fact_check(self, episode_dir: Path) -> None:
-        script = (episode_dir / "script.txt").read_text(encoding="utf-8")
-        research = (episode_dir / "research.json").read_text(encoding="utf-8")
+    def _fact_check_report(self, script: str, research: str) -> dict:
         model = self._model()
         prompt = f"""Fact-check this OTTAM narration strictly against the supplied research package. Do not add outside knowledge.
 Return strict JSON with keys: passed, supported_claims, unsupported_claims, overstatements, medical_or_neuroscience_risks, required_edits.
 Set passed=false for any material spoken claim that exceeds, contradicts, or universalizes the research evidence.
 
 RESEARCH:\n{research}\n\nSCRIPT:\n{script}"""
-        raw = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.1, max_tokens=4500)
-        report = self._parse_json(raw, "fact check")
-        (episode_dir / "fact_check.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        if report.get("passed") is not True:
-            edits = report.get("required_edits") or []
-            raise RecoverableStageError(f"Script failed evidence gate: {edits}")
+        raw = self.client.chat_stream(
+            model=model,
+            messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}],
+            temperature=0.1,
+            max_tokens=4500,
+        )
+        return self._parse_json(raw, "fact check")
+
+    def fact_check(self, episode_dir: Path) -> None:
+        research = (episode_dir / "research.json").read_text(encoding="utf-8")
+        min_words, max_words = self._word_bounds(episode_dir)
+        script_path = episode_dir / "script.txt"
+        script = script_path.read_text(encoding="utf-8")
+
+        history: list[dict] = []
+        for repair_round in range(4):
+            report = self._fact_check_report(script, research)
+            history.append(report)
+            final_payload = dict(report)
+            final_payload["repair_round"] = repair_round
+            final_payload["history"] = history
+            (episode_dir / "fact_check.json").write_text(
+                json.dumps(final_payload, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            if report.get("passed") is True:
+                return
+
+            if repair_round >= 3:
+                break
+
+            required_edits = report.get("required_edits") or []
+            unsupported = report.get("unsupported_claims") or []
+            overstatements = report.get("overstatements") or []
+            model = self._model()
+            prompt = f"""Repair ONLY the evidence problems in this OTTAM narration.
+Apply every required edit below. Preserve the hook, story structure, examples, pacing and payoff unless a flagged claim requires a small wording change.
+Do not add new factual claims. Do not introduce new neuroscience, diagnoses, statistics, causes or mechanisms.
+Keep the revised narration inside {min_words}-{max_words} words.
+Prefer precise hedging such as 'can', 'may', 'often', 'one factor', or 'one explanation' when the research does not support universal certainty.
+Return narration only, with no headings, notes, bullets or commentary.
+
+REQUIRED EDITS:\n{json.dumps(required_edits, ensure_ascii=False)}
+
+UNSUPPORTED CLAIMS:\n{json.dumps(unsupported, ensure_ascii=False)}
+
+OVERSTATEMENTS:\n{json.dumps(overstatements, ensure_ascii=False)}
+
+RESEARCH BOUNDARIES:\n{research}
+
+CURRENT SCRIPT:\n{script}"""
+            revised = self.client.chat_stream(
+                model=model,
+                messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}],
+                temperature=0.2,
+                max_tokens=6000,
+            ).strip()
+            revised_count = len(revised.split())
+            if not min_words <= revised_count <= max_words:
+                raise RecoverableStageError(
+                    f"Evidence repair returned {revised_count} words; required {min_words}-{max_words}"
+                )
+            script = revised
+            script_path.write_text(script + "\n", encoding="utf-8")
+
+        edits = history[-1].get("required_edits") if history else []
+        raise RecoverableStageError(f"Script failed evidence gate after automatic repair: {edits}")
 
     def _resize_script(self, episode_dir: Path, script: str, min_words: int, max_words: int) -> str:
         research = (episode_dir / "research.json").read_text(encoding="utf-8")
