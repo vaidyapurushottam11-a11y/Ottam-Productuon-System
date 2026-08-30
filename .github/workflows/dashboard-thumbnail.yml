@@ -1,0 +1,81 @@
+name: OTTAM Dashboard Thumbnail
+run-name: Thumbnail ${{ inputs.episode_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      episode_id:
+        description: "Finished OTTAM episode id"
+        required: true
+        type: string
+      instruction:
+        description: "Optional small regeneration instruction"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ottam-thumbnail-${{ inputs.episode_id }}
+  cancel-in-progress: false
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          npm install --no-save @modelcontextprotocol/sdk
+      - name: Restore latest episode artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EPISODE_ID: ${{ inputs.episode_id }}
+        run: |
+          mkdir -p runtime
+          NAME="ottam-production-${EPISODE_ID}"
+          ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${NAME}&per_page=100" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id')
+          test -n "$ID" && test "$ID" != "null"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ID}/zip" > /tmp/episode.zip
+          unzip -o /tmp/episode.zip -d runtime
+      - name: Restore Magnific OAuth session
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p runtime/magnific-auth
+          ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=magnific-oauth-session&per_page=100" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id')
+          test -n "$ID" && test "$ID" != "null"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ID}/zip" > /tmp/magnific.zip
+          unzip -o /tmp/magnific.zip -d runtime/magnific-auth
+      - name: Generate exactly one replacement thumbnail
+        env:
+          OTTAM_EPISODE_ID: ${{ inputs.episode_id }}
+          OTTAM_REGEN_INSTRUCTION: ${{ inputs.instruction }}
+          MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
+          MAGNIFIC_OAUTH_SESSION_FILE: runtime/magnific-auth/magnific-oauth-session.enc.json
+        run: ottam-thumbnail-generate
+      - name: Preserve renewed Magnific OAuth
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: magnific-oauth-session
+          path: runtime/magnific-auth/magnific-oauth-session.enc.json
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ottam-thumbnail-${{ inputs.episode_id }}
+          path: |
+            runtime/episodes/${{ inputs.episode_id }}/thumbnail.jpg
+            runtime/episodes/${{ inputs.episode_id }}/thumbnail_metadata.json
+            runtime/episodes/${{ inputs.episode_id }}/thumbnail_versions/
+          retention-days: 30

@@ -1,0 +1,41 @@
+name: OTTAM Dashboard Topics
+run-name: Topics ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: "Dashboard topic request id"
+        required: true
+        type: string
+      instruction:
+        description: "Optional topic direction"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  topics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Generate five scored topics
+        env:
+          XKIRO_API_KEY: ${{ secrets.XKIRO_API_KEY }}
+          OTTAM_TOPIC_REQUEST_ID: ${{ inputs.request_id }}
+          OTTAM_TOPIC_INSTRUCTION: ${{ inputs.instruction }}
+        run: python -m ottam.topic_candidates
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-topics-${{ inputs.request_id }}
+          path: runtime/dashboard/topic_candidates.json
+          retention-days: 7
