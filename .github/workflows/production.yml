@@ -74,7 +74,7 @@ jobs:
             unzip -o /tmp/episode-checkpoint.zip -d runtime
           fi
 
-      - name: Setup · Seed selected topic
+      - name: Setup · Seed selected topic and resume policy
         env:
           EPISODE_ID: ${{ inputs.episode_id }}
           SELECTED_TOPIC_JSON: ${{ inputs.selected_topic_json }}
@@ -89,14 +89,26 @@ jobs:
           resume_failed = os.environ.get("RESUME_FAILED", "false").lower() == "true"
           episode_dir = Path("runtime/episodes") / episode_id
           state_dir = Path("runtime/state")
+          profile_dir = Path("config/episodes")
           episode_dir.mkdir(parents=True, exist_ok=True)
           state_dir.mkdir(parents=True, exist_ok=True)
+          profile_dir.mkdir(parents=True, exist_ok=True)
           topic_path = episode_dir / "topic.json"
           state_path = state_dir / f"{episode_id}.json"
+          profile_path = profile_dir / f"{episode_id}.yaml"
 
           if not topic_path.exists():
               topic_path.write_text(
                   json.dumps({"winner": topic, "source": "dashboard_selection"}, indent=2, ensure_ascii=False),
+                  encoding="utf-8",
+              )
+
+          # Dashboard episodes need at least an ~8 minute script, not a brittle
+          # maximum. 1900-3000 keeps the target useful while accepting a healthy
+          # longer script instead of repeatedly rewriting it.
+          if not profile_path.exists():
+              profile_path.write_text(
+                  "episode:\n  target_words:\n    min: 1900\n    max: 3000\n",
                   encoding="utf-8",
               )
 
@@ -117,15 +129,39 @@ jobs:
               )
           elif resume_failed:
               state = json.loads(state_path.read_text(encoding="utf-8"))
-              previous_error = state.get("last_error")
               state["status"] = "PENDING"
               state["attempts"] = 0
               state["quarantined"] = False
               state["last_error"] = None
-              state["manual_retry"] = True
-              if previous_error:
-                  state["previous_error"] = previous_error
+              # Do not add ad-hoc fields to the core EpisodeState payload.
               state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+          PY
+
+      - name: Setup · Detect resume stage
+        id: resume_stage
+        env:
+          EPISODE_ID: ${{ inputs.episode_id }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          from pathlib import Path
+          mapping = {
+              "research": 1,
+              "write_script": 2,
+              "fact_check": 3,
+              "script_qa": 4,
+              "generate_tts": 5,
+              "plan_visuals": 6,
+              "generate_images": 7,
+              "visual_qa": 8,
+              "assemble_video": 9,
+              "video_qa": 10,
+          }
+          episode_id = os.environ["EPISODE_ID"]
+          state = json.loads((Path("runtime/state") / f"{episode_id}.json").read_text())
+          stage = state.get("stage", "research")
+          print(f"start_index={mapping.get(stage, 1)}")
+          print(f"start_stage={stage}")
           PY
 
       - name: Setup · Restore Magnific session
@@ -143,33 +179,43 @@ jobs:
           test -f runtime/magnific-auth/magnific-oauth-session.enc.json
 
       - name: Stage 1/10 · Research
+        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 1 }}
         env: { OTTAM_STOP_AFTER_STAGE: research }
         run: ottam-run
       - name: Stage 2/10 · Write script
+        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 2 }}
         env: { OTTAM_STOP_AFTER_STAGE: write_script }
         run: ottam-run
       - name: Stage 3/10 · Fact check
+        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 3 }}
         env: { OTTAM_STOP_AFTER_STAGE: fact_check }
         run: ottam-run
       - name: Stage 4/10 · Script QA
+        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 4 }}
         env: { OTTAM_STOP_AFTER_STAGE: script_qa }
         run: ottam-run
       - name: Stage 5/10 · Generate narration
+        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 5 }}
         env: { OTTAM_STOP_AFTER_STAGE: generate_tts }
         run: ottam-run
       - name: Stage 6/10 · Plan visuals
+        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 6 }}
         env: { OTTAM_STOP_AFTER_STAGE: plan_visuals }
         run: ottam-run
       - name: Stage 7/10 · Generate images
+        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 7 }}
         env: { OTTAM_STOP_AFTER_STAGE: generate_images }
         run: ottam-run
       - name: Stage 8/10 · Visual QA
+        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 8 }}
         env: { OTTAM_STOP_AFTER_STAGE: visual_qa }
         run: ottam-run
       - name: Stage 9/10 · Assemble video
+        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 9 }}
         env: { OTTAM_STOP_AFTER_STAGE: assemble_video }
         run: ottam-run
       - name: Stage 10/10 · Video QA
+        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 10 }}
         env: { OTTAM_STOP_AFTER_STAGE: video_qa }
         run: ottam-run
 
