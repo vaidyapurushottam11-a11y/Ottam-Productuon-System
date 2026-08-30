@@ -1,0 +1,43 @@
+name: OTTAM YouTube Authorization
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - auth/YOUTUBE
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install OTTAM package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Authorize OTTAM to manage YouTube
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
+          YOUTUBE_OAUTH_SESSION_FILE: runtime/youtube-auth/youtube-oauth-session.enc.json
+        run: ottam-youtube-authorize
+
+      - name: Preserve encrypted YouTube OAuth session
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-oauth-session
+          path: runtime/youtube-auth/youtube-oauth-session.enc.json
+          if-no-files-found: warn
+          retention-days: 90

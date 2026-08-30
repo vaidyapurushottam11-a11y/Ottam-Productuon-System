@@ -12,10 +12,13 @@ dependencies = [
   "httpx>=0.28.1",
   "tenacity>=9.0.0",
   "Pillow>=10.4.0",
+  "cryptography>=43.0.0",
 ]
 
 [project.scripts]
 ottam-run = "ottam.cli:main"
+ottam-youtube-authorize = "ottam.youtube_publish:authorize_main"
+ottam-youtube-publish = "ottam.youtube_publish:publish_main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
