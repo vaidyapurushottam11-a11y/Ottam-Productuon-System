@@ -13,8 +13,8 @@ log = logging.getLogger("ottam.orchestrator")
 class Stage(str, Enum):
     DISCOVER_TOPIC = "discover_topic"
     RESEARCH = "research"
-    FACT_CHECK = "fact_check"
     WRITE_SCRIPT = "write_script"
+    FACT_CHECK = "fact_check"
     SCRIPT_QA = "script_qa"
     GENERATE_TTS = "generate_tts"
     PLAN_VISUALS = "plan_visuals"
