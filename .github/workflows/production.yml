@@ -7,9 +7,6 @@ on:
         description: "Optional explicit episode id"
         required: false
         type: string
-  schedule:
-    # Temporary development schedule. Publishing cadence will be locked separately.
-    - cron: "30 0 * * *"
 
 concurrency:
   group: ottam-production
@@ -44,23 +41,16 @@ jobs:
       - name: Run production orchestrator
         env:
           OTTAM_EPISODE_ID: ${{ inputs.episode_id }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
-          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
-          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          XKIRO_API_KEY: ${{ secrets.XKIRO_API_KEY }}
         run: ottam-run
 
-      - name: Preserve production state and diagnostics
+      - name: Preserve production outputs, state and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ottam-production-state-${{ github.run_id }}
+          name: ottam-production-${{ github.run_id }}
           path: |
+            runtime/episodes/
             runtime/state/
             runtime/logs/
           if-no-files-found: ignore
