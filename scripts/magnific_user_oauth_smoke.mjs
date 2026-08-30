@@ -9,6 +9,41 @@ const authPath = 'runtime/magnific-auth/magnific-oauth-session.enc.json';
 const out = 'runtime/magnific-user-smoke';
 await fs.mkdir(out, { recursive: true });
 
+function walk(value, visitor) {
+  if (Array.isArray(value)) {
+    for (const item of value) walk(item, visitor);
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) {
+      visitor(key, child);
+      walk(child, visitor);
+    }
+  }
+}
+
+function findIdentifier(value) {
+  let found = null;
+  walk(value, (key, child) => {
+    if (!found && ['identifier', 'creationIdentifier'].includes(key) && typeof child === 'string') found = child;
+  });
+  if (found) return found;
+  const raw = JSON.stringify(value);
+  const match = raw.match(/(?:identifier|creationIdentifier)\W+([A-Za-z0-9_-]{6,40})/i);
+  return match?.[1] || null;
+}
+
+function findHttpUrl(value) {
+  let found = null;
+  walk(value, (_key, child) => {
+    if (!found && typeof child === 'string' && /^https?:\/\//.test(child)) found = child;
+  });
+  if (found) return found;
+  const raw = JSON.stringify(value);
+  const match = raw.match(/https?:\/\/[^"\\\s]+/);
+  return match?.[0]?.replace(/\\u0026/g, '&') || null;
+}
+
 const envelope = JSON.parse(await fs.readFile(authPath, 'utf8'));
 const key = crypto.scryptSync(secret, 'ottam-magnific-oauth-v1', 32);
 const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64'));
@@ -19,7 +54,6 @@ const clear = Buffer.concat([
 ]).toString('utf8');
 const session = JSON.parse(clear);
 
-// Always refresh instead of reusing a potentially expired access token.
 const refreshBody = new URLSearchParams({
   grant_type: 'refresh_token',
   client_id: session.client_id,
@@ -57,14 +91,8 @@ try {
   await fs.writeFile(`${out}/generate-response.json`, JSON.stringify(generated, null, 2));
   await fs.writeFile(`${out}/prompt.txt`, prompt);
 
-  const raw = JSON.stringify(generated);
-  const idMatches = [...raw.matchAll(/(?:identifier|creationIdentifier)[\\"']?\s*[:=]\s*[\\"']([^\\"']+)/g)];
-  let identifier = idMatches[0]?.[1];
-  if (!identifier) {
-    const compact = raw.match(/\b[A-Za-z0-9_-]{8,24}\b/g) || [];
-    identifier = compact.find((x) => !['images_generate','text-to-image'].includes(x));
-  }
-  if (!identifier) throw new Error(`Unable to find Magnific creation identifier: ${raw.slice(0, 1800)}`);
+  const identifier = findIdentifier(generated);
+  if (!identifier) throw new Error(`Unable to find Magnific creation identifier: ${JSON.stringify(generated).slice(0, 1800)}`);
   console.log(`Queued GPT-2 low-quality creation: ${identifier}`);
 
   let completed = false;
@@ -79,10 +107,8 @@ try {
 
   const details = await client.callTool({ name: 'creations_get', arguments: { creationIdentifier: identifier } });
   await fs.writeFile(`${out}/creation.json`, JSON.stringify(details, null, 2));
-  const dr = JSON.stringify(details);
-  const urlMatch = dr.match(/https:\\/\\/[^\\"\\\\\s]+/);
-  if (!urlMatch) throw new Error(`No generated image URL in creation details: ${dr.slice(0, 1800)}`);
-  const imageUrl = urlMatch[0].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+  const imageUrl = findHttpUrl(details);
+  if (!imageUrl) throw new Error(`No generated image URL in creation details: ${JSON.stringify(details).slice(0, 1800)}`);
   const imageResponse = await fetch(imageUrl);
   if (!imageResponse.ok) throw new Error(`Image download HTTP ${imageResponse.status}`);
   const bytes = Buffer.from(await imageResponse.arrayBuffer());
