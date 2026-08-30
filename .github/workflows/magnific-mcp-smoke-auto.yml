@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  m2m-smoke:
+  token-probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -19,17 +19,14 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install MCP SDK
-        run: npm install --no-save @modelcontextprotocol/sdk
+      - name: Probe Magnific MCP token audiences
+        run: node scripts/magnific_token_probe.mjs
 
-      - name: Run Magnific machine-to-machine GPT-2 smoke
-        run: node scripts/magnific_m2m_smoke.mjs
-
-      - name: Upload smoke evidence
+      - name: Upload token probe
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: magnific-m2m-gpt2-smoke-${{ github.run_id }}
-          path: runtime/magnific-m2m-smoke/
+          name: magnific-token-probe-${{ github.run_id }}
+          path: runtime/magnific-token-probe/
           if-no-files-found: warn
           retention-days: 7
