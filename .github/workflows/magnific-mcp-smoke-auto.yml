@@ -1,0 +1,37 @@
+name: Magnific MCP GPT-2 Auto Smoke
+
+on:
+  push:
+    branches:
+      - test/magnific-mcp-smoke
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install MCP SDK
+        run: npm install --no-save @modelcontextprotocol/sdk
+
+      - name: Run Magnific GPT-2 MCP smoke
+        env:
+          MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
+        run: node scripts/magnific_mcp_smoke.mjs
+
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: magnific-mcp-gpt2-smoke-${{ github.run_id }}
+          path: runtime/magnific-mcp-smoke/
+          if-no-files-found: warn
+          retention-days: 7
