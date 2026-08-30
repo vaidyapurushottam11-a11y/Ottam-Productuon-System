@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ottam-production-system"
 version = "0.1.0"
-description = "Autonomous production and publishing system for the OTTAM YouTube channel"
+description = "Autonomous production system for the OTTAM YouTube channel"
 requires-python = ">=3.12"
 dependencies = [
   "PyYAML>=6.0.2",
@@ -13,10 +13,15 @@ dependencies = [
   "tenacity>=9.0.0",
   "Pillow>=10.4.0",
   "cryptography>=43.0.0",
+  "Flask>=3.1.0",
 ]
 
 [project.scripts]
 ottam-run = "ottam.cli:main"
+ottam-dashboard = "ottam.dashboard:main"
+ottam-upload-package = "ottam.upload_package:generate_main"
+ottam-caption-regenerate = "ottam.upload_package:regenerate_main"
+ottam-thumbnail-generate = "ottam.package_thumbnail:main"
 ottam-youtube-authorize = "ottam.youtube_publish:authorize_main"
 ottam-youtube-publish = "ottam.youtube_publish:publish_main"
 ottam-youtube-thumbnail = "ottam.youtube_thumbnail:main"
