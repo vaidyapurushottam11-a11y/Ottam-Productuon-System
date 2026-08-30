@@ -47,18 +47,19 @@ class ContentEngine:
 
     def _word_bounds(self, episode_dir: Path) -> tuple[int, int]:
         words = self._profile(episode_dir).get("episode", {}).get("target_words", {})
-        return int(words.get("min", 950)), int(words.get("max", 1200))
+        # Dashboard-created episodes have no profile. 1900-2200 words is based
+        # on OTTAM's locked 1.0x Kokoro delivery and targets roughly 8-10 minutes.
+        return int(words.get("min", 1900)), int(words.get("max", 2200))
 
     @staticmethod
     def _hard_word_bounds(min_words: int, max_words: int) -> tuple[int, int]:
         """Hard limits are wider than editorial targets.
 
-        A tiny miss such as 617 vs a 620 target must never trigger another full
-        LLM rewrite. We only spend another generation when duration/length is
-        materially off target.
+        Small misses must never kill a production. Material misses are repaired
+        and retried before any expensive visual generation begins.
         """
-        lower_margin = max(20, round(min_words * 0.05))
-        upper_margin = max(30, round(max_words * 0.05))
+        lower_margin = max(40, round(min_words * 0.08))
+        upper_margin = max(60, round(max_words * 0.08))
         return max(1, min_words - lower_margin), max_words + upper_margin
 
     def discover_topic(self, episode_dir: Path) -> None:
@@ -107,71 +108,84 @@ Return JSON with: thesis, known_background, claims_to_verify, contested_points, 
         min_words, max_words = self._word_bounds(episode_dir)
         model = self._model()
         prompt = f"""Write a production-ready OTTAM narration script using ONLY the factual boundaries in the topic and research below.
-Target {min_words}-{max_words} spoken words. Strong hook in the first 10-15 seconds. Use one clear curiosity arc, escalating reveals, concrete everyday examples, and a satisfying payoff.
+Target {min_words}-{max_words} spoken words so the finished narration is at least about eight minutes at OTTAM's locked 1.0x voice speed. Strong hook in the first 10-15 seconds. Use one clear curiosity arc, escalating reveals, concrete everyday examples, and a satisfying payoff.
 No headings, stage directions, citations, scene labels, or bullet points in the spoken script. Natural American-English narration.
 Do not introduce neuroscience, diagnoses, statistics, or causal claims that are not explicitly supported by the research package.
 Where the research describes an interpretation or account, preserve that uncertainty instead of turning it into a universal fact.
 
 TOPIC:\n{topic}\n\nRESEARCH:\n{research}"""
-        script = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.68, max_tokens=6500)
+        script = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.68, max_tokens=9000)
         (episode_dir / "script.txt").write_text(script.strip() + "\n", encoding="utf-8")
 
     def _fact_check_report(self, script: str, research: str) -> dict:
         model = self._model()
         prompt = f"""Fact-check this OTTAM narration strictly against the supplied research package. Do not add outside knowledge.
-Return strict JSON with keys: passed, supported_claims, unsupported_claims, overstatements, medical_or_neuroscience_risks, required_edits.
-Set passed=false for any material spoken claim that exceeds, contradicts, or universalizes the research evidence.
+Return strict JSON with exactly these keys: passed, blocking_issues, warnings, supported_claims, required_edits.
+
+BLOCKING issues are ONLY serious factual risks that must not be published:
+- fabricated or unsupported statistics, studies, named evidence, or quotations
+- a direct contradiction of the supplied research
+- an unsupported medical/clinical diagnosis or harmful health claim
+- an unsupported neuroscience/biological mechanism presented as fact
+- a materially false causal claim that changes the episode's meaning
+
+NON-BLOCKING warnings include ordinary hedging, scope, rhetorical phrasing, minor universalization, wording such as 'always'/'nobody', or a metaphor that should be softened. These should be improved when easy, but must NOT fail an otherwise sound production.
+Set passed=true whenever blocking_issues is empty, even if warnings remain.
 
 RESEARCH:\n{research}\n\nSCRIPT:\n{script}"""
         raw = self.client.chat_stream(
             model=model,
             messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}],
             temperature=0.1,
-            max_tokens=4500,
+            max_tokens=5000,
         )
-        return self._parse_json(raw, "fact check")
+        report = self._parse_json(raw, "fact check")
+        report.setdefault("blocking_issues", [])
+        report.setdefault("warnings", [])
+        report.setdefault("required_edits", [])
+        return report
 
     def fact_check(self, episode_dir: Path) -> None:
         research = (episode_dir / "research.json").read_text(encoding="utf-8")
         min_words, max_words = self._word_bounds(episode_dir)
-        hard_min, hard_max = self._hard_word_bounds(min_words, max_words)
         script_path = episode_dir / "script.txt"
         script = script_path.read_text(encoding="utf-8")
 
-        # At most one repair generation. Evidence is important, but repeatedly
-        # rewriting a nearly-correct script is both expensive and destabilizing.
+        # Initial check + up to two focused repairs. Minor warnings are accepted.
+        # If a true blocker survives, raise RecoverableStageError so the
+        # orchestrator retries the stage rather than killing the entire episode.
         history: list[dict] = []
-        for repair_round in range(2):
+        for repair_round in range(3):
             report = self._fact_check_report(script, research)
+            blockers = report.get("blocking_issues") or []
+            warnings = report.get("warnings") or []
             history.append(report)
             final_payload = dict(report)
             final_payload["repair_round"] = repair_round
             final_payload["history"] = history
+            final_payload["accepted_with_warnings"] = not blockers and bool(warnings)
+            final_payload["passed"] = not blockers
             (episode_dir / "fact_check.json").write_text(
                 json.dumps(final_payload, indent=2, ensure_ascii=False), encoding="utf-8"
             )
-            if report.get("passed") is True:
-                return
 
-            if repair_round >= 1:
+            if not blockers:
+                return
+            if repair_round >= 2:
                 break
 
-            required_edits = report.get("required_edits") or []
-            unsupported = report.get("unsupported_claims") or []
-            overstatements = report.get("overstatements") or []
             model = self._model()
-            prompt = f"""Repair ONLY the evidence problems in this OTTAM narration.
-Apply every required edit below. Preserve the hook, story structure, examples, pacing and payoff unless a flagged claim requires a small wording change.
-Do not add new factual claims. Do not introduce new neuroscience, diagnoses, statistics, causes or mechanisms.
-Aim for {min_words}-{max_words} words, but do not damage a good script merely to hit an exact count.
-Prefer precise hedging such as 'can', 'may', 'often', 'one factor', or 'one explanation' when the research does not support universal certainty.
+            prompt = f"""Repair ONLY the serious factual blockers in this OTTAM narration.
+Also fix easy warnings when doing so does not harm the story. Preserve the hook, structure, examples, pacing and payoff.
+Do not add new factual claims, statistics, studies, diagnoses, neuroscience, causes or mechanisms.
+Keep the narration approximately {min_words}-{max_words} words, but factual correctness is more important than exact count.
 Return narration only, with no headings, notes, bullets or commentary.
 
-REQUIRED EDITS:\n{json.dumps(required_edits, ensure_ascii=False)}
+BLOCKERS:\n{json.dumps(blockers, ensure_ascii=False)}
 
-UNSUPPORTED CLAIMS:\n{json.dumps(unsupported, ensure_ascii=False)}
+WARNINGS:\n{json.dumps(warnings, ensure_ascii=False)}
 
-OVERSTATEMENTS:\n{json.dumps(overstatements, ensure_ascii=False)}
+REQUIRED EDITS:\n{json.dumps(report.get('required_edits') or [], ensure_ascii=False)}
 
 RESEARCH BOUNDARIES:\n{research}
 
@@ -180,18 +194,17 @@ CURRENT SCRIPT:\n{script}"""
                 model=model,
                 messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}],
                 temperature=0.2,
-                max_tokens=6000,
+                max_tokens=9000,
             ).strip()
-            revised_count = len(revised.split())
-            if not hard_min <= revised_count <= hard_max:
-                raise QuarantineEpisode(
-                    f"Evidence repair materially changed length to {revised_count} words; hard window is {hard_min}-{hard_max}"
-                )
+            if not revised:
+                raise RecoverableStageError("Fact-check repair returned an empty script")
             script = revised
             script_path.write_text(script + "\n", encoding="utf-8")
 
-        edits = history[-1].get("required_edits") if history else []
-        raise QuarantineEpisode(f"Script still has material evidence problems after one repair: {edits}")
+        blockers = history[-1].get("blocking_issues") if history else []
+        raise RecoverableStageError(
+            f"Serious factual blockers remain after focused repairs; retrying fact-check stage: {blockers}"
+        )
 
     def _resize_script(self, episode_dir: Path, script: str, min_words: int, max_words: int) -> str:
         research = (episode_dir / "research.json").read_text(encoding="utf-8")
@@ -199,16 +212,16 @@ CURRENT SCRIPT:\n{script}"""
         target = (min_words + max_words) // 2
         hard_min, hard_max = self._hard_word_bounds(min_words, max_words)
         prompt = f"""Rewrite the narration below to approximately {target} words. The preferred target window is {min_words}-{max_words} words.
-Preserve the hook, central contradiction, evidence, reveal and payoff. Remove repetition before removing story value.
+Preserve the hook, central contradiction, evidence, reveal and payoff. Expand with concrete examples and explanation when short; remove repetition when long.
 Do not add any new factual claim, statistic, diagnosis, neuroscience explanation, or source. Stay strictly inside the supplied research boundaries.
 Return narration only: no headings, notes, bullets, citations, or commentary.
 
 RESEARCH BOUNDARIES:\n{research}\n\nCURRENT SCRIPT:\n{script}"""
-        revised = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.35, max_tokens=6000).strip()
+        revised = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.35, max_tokens=9000).strip()
         count = len(revised.split())
         if not hard_min <= count <= hard_max:
-            raise QuarantineEpisode(
-                f"Automatic resize returned {count} words; hard acceptable window is {hard_min}-{hard_max}"
+            raise RecoverableStageError(
+                f"Script resize returned {count} words; retrying because the broad acceptable window is {hard_min}-{hard_max}"
             )
         (episode_dir / "script.txt").write_text(revised + "\n", encoding="utf-8")
         self.fact_check(episode_dir)
@@ -217,7 +230,7 @@ RESEARCH BOUNDARIES:\n{research}\n\nCURRENT SCRIPT:\n{script}"""
     def _audit_script(self, script: str) -> dict:
         model = self._model()
         prompt = f"""Audit the OTTAM script below. Return strict JSON with numeric 0-100 scores for hook, retention, clarity, naturalness, factual_discipline, ottam_style, plus blocking_issues and revision_instructions.
-A blocking issue is unsupported certainty, obvious factual fabrication, severe repetition, incoherence, weak payoff, generic filler, or unusable narration.
+A blocking issue is only something that makes the narration genuinely unusable or materially unsafe/inaccurate: obvious factual fabrication, severe incoherence, unusable narration, or a major evidence problem. Minor style preferences, small score misses, wording polish, or ordinary hedging are not blockers.
 Judge this as a real YouTube upload candidate, not a prototype.
 
 SCRIPT:\n{script}"""
@@ -228,8 +241,7 @@ SCRIPT:\n{script}"""
     def _qa_decision(report: dict) -> tuple[bool, bool, dict]:
         """Return (acceptable, needs_repair, diagnostics).
 
-        Scores are subjective estimates, not exact measurements. A one-point miss
-        must not trigger thousands of extra tokens. Repair only meaningful gaps.
+        Scores are subjective estimates. Small misses are warnings, not gates.
         """
         score_keys = ("hook", "retention", "clarity", "naturalness", "factual_discipline", "ottam_style")
         score_map = {k: int(report.get(k, 0)) for k in score_keys}
@@ -238,18 +250,9 @@ SCRIPT:\n{script}"""
         average = sum(scores) / len(scores) if scores else 0.0
         minimum = min(scores, default=0)
 
-        # Strong-enough upload candidate: no blockers, good overall quality,
-        # no genuinely weak dimension. 81 vs 82 is explicitly acceptable.
-        acceptable = (
-            not blockers
-            and average >= 82
-            and minimum >= 78
-            and score_map["hook"] >= 80
-            and score_map["factual_discipline"] >= 80
-        )
-
-        # Spend on a rewrite only for a meaningful deficit or a true blocker.
-        needs_repair = bool(blockers) or average < 79 or minimum < 74 or score_map["hook"] < 76 or score_map["factual_discipline"] < 78
+        acceptable = not blockers and average >= 78 and minimum >= 72
+        # Repair only a real blocker or a clearly poor script, not tiny misses.
+        needs_repair = bool(blockers) or average < 72 or minimum < 65
         return acceptable, needs_repair, {
             "average_score": round(average, 2),
             "minimum_score": minimum,
@@ -264,8 +267,8 @@ SCRIPT:\n{script}"""
         hard_min, hard_max = self._hard_word_bounds(min_words, max_words)
         actual_words = len(script.split())
 
-        # Preferred word count is a target, not a razor-thin failure boundary.
-        # Only rewrite when the miss is material enough to threaten runtime.
+        # Length is important for the 8+ minute format, but misses are repaired
+        # rather than quarantined.
         if not hard_min <= actual_words <= hard_max:
             script = self._resize_script(episode_dir, script, min_words, max_words)
             actual_words = len(script.split())
@@ -279,28 +282,24 @@ SCRIPT:\n{script}"""
         report["within_target_words"] = min_words <= actual_words <= max_words
 
         if acceptable or not needs_repair:
-            # Marginal misses are accepted and recorded instead of spending more
-            # tokens. Final Kokoro duration is the authoritative runtime gate.
             report["passed"] = True
             report["accepted_with_tolerance"] = not acceptable
             (episode_dir / "script_qa.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
             return
 
-        # One QA repair maximum for a significant quality gap.
         research = (episode_dir / "research.json").read_text(encoding="utf-8")
         instructions = report.get("revision_instructions") or []
         model = self._model()
-        prompt = f"""Revise this OTTAM narration only because the QA gap is material.
+        prompt = f"""Revise this OTTAM narration because the QA gap is clearly material.
 Fix the blocking/low-scoring issues below while preserving factual boundaries, hook, story structure and payoff.
-Aim for {min_words}-{max_words} words, but prioritize a natural production-ready script over exact word-count precision.
-Do not add new factual claims. Return narration only.
+Aim for {min_words}-{max_words} words. Do not add new factual claims. Return narration only.
 
 QA REVISION INSTRUCTIONS:\n{json.dumps(instructions, ensure_ascii=False)}\n\nRESEARCH BOUNDARIES:\n{research}\n\nSCRIPT:\n{script}"""
-        revised = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.3, max_tokens=6000).strip()
+        revised = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.3, max_tokens=9000).strip()
         revised_count = len(revised.split())
         if not hard_min <= revised_count <= hard_max:
-            raise QuarantineEpisode(
-                f"QA repair materially missed length at {revised_count} words; hard window is {hard_min}-{hard_max}"
+            raise RecoverableStageError(
+                f"QA repair returned {revised_count} words; retrying script QA because broad window is {hard_min}-{hard_max}"
             )
         script_path.write_text(revised + "\n", encoding="utf-8")
         self.fact_check(episode_dir)
@@ -313,8 +312,6 @@ QA REVISION INSTRUCTIONS:\n{json.dumps(instructions, ensure_ascii=False)}\n\nRES
         final_report["hard_word_window"] = [hard_min, hard_max]
         final_report["within_target_words"] = min_words <= revised_count <= max_words
 
-        # No second QA rewrite. If it is only marginal, accept it; if it still
-        # has a significant deficit, quarantine without burning more tokens.
         if final_acceptable or not final_needs_repair:
             final_report["passed"] = True
             final_report["accepted_with_tolerance"] = not final_acceptable
@@ -324,8 +321,8 @@ QA REVISION INSTRUCTIONS:\n{json.dumps(instructions, ensure_ascii=False)}\n\nRES
         final_report["passed"] = False
         final_report["accepted_with_tolerance"] = False
         (episode_dir / "script_qa.json").write_text(json.dumps(final_report, indent=2), encoding="utf-8")
-        raise QuarantineEpisode(
-            f"Script still has a significant QA gap after one repair: average={final_diag['average_score']}, min={final_diag['minimum_score']}, blockers={final_diag['blocking_issues']}"
+        raise RecoverableStageError(
+            f"Script still has a material QA problem after repair; retrying stage: average={final_diag['average_score']}, min={final_diag['minimum_score']}, blockers={final_diag['blocking_issues']}"
         )
 
 
