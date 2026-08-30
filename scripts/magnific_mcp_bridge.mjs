@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import crypto from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -22,14 +23,27 @@ function findIdentifier(value) {
   walk(value, (key, child) => {
     if (!result && ['identifier', 'creationIdentifier'].includes(key) && typeof child === 'string') result = child;
   });
-  return result;
+  if (result) return result;
+  const raw = JSON.stringify(value);
+  return raw.match(/(?:identifier|creationIdentifier)[^A-Za-z0-9_-]+([A-Za-z0-9_-]{6,40})/i)?.[1] || null;
 }
 function findUrl(value) {
   let result = null;
   walk(value, (key, child) => {
     if (!result && ['url', 'originalUrl'].includes(key) && typeof child === 'string' && /^https?:\/\//.test(child)) result = child;
   });
-  return result;
+  if (result) return result;
+  const raw = JSON.stringify(value);
+  return raw.match(/https?:\/\/[^"\\\s]+/)?.[0]?.replace(/\\u0026/g, '&') || null;
+}
+function findCredits(value) {
+  let result = null;
+  walk(value, (key, child) => {
+    if (result === null && key === 'credits' && Number.isFinite(Number(child))) result = Number(child);
+  });
+  if (result !== null) return result;
+  const match = JSON.stringify(value).match(/credits(?:\\?"|\s)*[:=]\s*(\d+)/i);
+  return match ? Number(match[1]) : null;
 }
 function deriveKey() {
   return crypto.scryptSync(secret, 'ottam-magnific-oauth-v1', 32);
@@ -54,6 +68,7 @@ async function encryptSession(session) {
     tag: cipher.getAuthTag().toString('base64'),
     ciphertext: ciphertext.toString('base64'),
   };
+  await fs.mkdir(path.dirname(authPath), { recursive: true });
   await fs.writeFile(authPath, JSON.stringify(envelope, null, 2));
 }
 
@@ -80,11 +95,9 @@ const tokenText = await tokenResponse.text();
 if (!tokenResponse.ok) throw new Error(`Magnific OAuth refresh HTTP ${tokenResponse.status}: ${tokenText.slice(0, 500)}`);
 const tokens = JSON.parse(tokenText);
 if (!tokens.access_token) throw new Error('Magnific OAuth refresh returned no access token');
-if (tokens.refresh_token) {
-  session.refresh_token = tokens.refresh_token;
-  session.obtained_at = new Date().toISOString();
-  await encryptSession(session);
-}
+if (tokens.refresh_token) session.refresh_token = tokens.refresh_token;
+session.obtained_at = new Date().toISOString();
+await encryptSession(session);
 
 const transport = new StreamableHTTPClientTransport(new URL('https://mcp.magnific.com'), {
   requestInit: { headers: { Authorization: `Bearer ${tokens.access_token}` } },
@@ -104,7 +117,7 @@ try {
     },
   });
   const identifier = findIdentifier(generated);
-  if (!identifier) throw new Error(`Magnific images_generate returned no creation identifier`);
+  if (!identifier) throw new Error('Magnific images_generate returned no creation identifier');
 
   let completed = false;
   for (let attempt = 0; attempt < 24; attempt += 1) {
@@ -121,22 +134,29 @@ try {
   const details = await client.callTool({ name: 'creations_get', arguments: { creationIdentifier: identifier } });
   const imageUrl = findUrl(details);
   if (!imageUrl) throw new Error(`Magnific creation ${identifier} returned no image URL`);
+  const credits = findCredits(details);
+  if (credits !== null && credits > 15) {
+    throw new Error(`Magnific cost guard rejected creation ${identifier}: ${credits} credits > 15`);
+  }
+
   const imageResponse = await fetch(imageUrl);
   if (!imageResponse.ok) throw new Error(`Magnific image download HTTP ${imageResponse.status}`);
   const bytes = Buffer.from(await imageResponse.arrayBuffer());
   if (bytes.length < 4096) throw new Error(`Magnific image ${identifier} is unexpectedly small (${bytes.length} bytes)`);
 
-  await fs.mkdir(new URL('.', `file://${request.output_path}`).pathname, { recursive: true }).catch(() => {});
+  await fs.mkdir(path.dirname(request.output_path), { recursive: true });
+  await fs.mkdir(path.dirname(request.metadata_path), { recursive: true });
   await fs.writeFile(request.output_path, bytes);
   await fs.writeFile(request.metadata_path, JSON.stringify({
     identifier,
     mode: 'gpt-2',
     quality: 'low',
     aspect_ratio: '16:9',
+    credits,
     byte_count: bytes.length,
     generated_at: new Date().toISOString(),
   }, null, 2));
-  console.log(JSON.stringify({ success: true, identifier, bytes: bytes.length }));
+  console.log(JSON.stringify({ success: true, identifier, credits, bytes: bytes.length }));
 } finally {
   await client.close();
 }
