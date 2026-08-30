@@ -4,9 +4,15 @@ on:
   push:
     branches:
       - test/magnific-mcp-smoke
+    paths-ignore:
+      - runtime/device-auth-request.json
+
+concurrency:
+  group: magnific-device-auth
+  cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   authorize:
@@ -22,6 +28,9 @@ jobs:
       - name: Start one-time Magnific device authorization
         env:
           MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_BRANCH: ${{ github.ref_name }}
         run: node scripts/magnific_device_auth.mjs
 
       - name: Upload encrypted OAuth session
