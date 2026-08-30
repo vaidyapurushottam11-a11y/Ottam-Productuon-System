@@ -1,0 +1,14 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PORT=8080 \
+    OTTAM_DASHBOARD_DATA=/data
+
+WORKDIR /app
+COPY . /app
+RUN python -m pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -e .
+RUN mkdir -p /data
+
+EXPOSE 8080
+CMD ["sh", "-c", "gunicorn --workers 2 --threads 4 --timeout 120 --bind 0.0.0.0:${PORT} ottam.dashboard:app"]
