@@ -18,9 +18,9 @@ class FFmpegRenderer:
 
     def render(self, episode_dir: Path) -> None:
         storyboard_path = episode_dir / "storyboard.json"
-        narration = episode_dir / "narration.wav"
+        narration = episode_dir / "audio" / "narration.wav"
         if not storyboard_path.exists() or not narration.exists():
-            raise QuarantineEpisode("Render requires storyboard.json and narration.wav")
+            raise QuarantineEpisode("Render requires storyboard.json and audio/narration.wav")
 
         try:
             payload = json.loads(storyboard_path.read_text())
