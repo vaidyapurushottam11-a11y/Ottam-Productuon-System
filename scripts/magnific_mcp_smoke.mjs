@@ -5,7 +5,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 const apiKey = process.env.MAGNIFIC_API_KEY;
 if (!apiKey) throw new Error('MAGNIFIC_API_KEY is not configured');
 
-const endpoint = new URL('https://api.magnific.com/mcp');
+const endpoint = new URL('https://mcp.magnific.com');
 const transport = new StreamableHTTPClientTransport(endpoint, {
   requestInit: {
     headers: {
