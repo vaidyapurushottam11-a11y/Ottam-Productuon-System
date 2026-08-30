@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-from .orchestrator import QuarantineEpisode
+from .orchestrator import QuarantineEpisode, RecoverableStageError
 from .visual_style import PromptSpec, build_magnific_prompt
 from .xkiro import XKiroClient
 
@@ -25,6 +25,10 @@ Verified prior-episode behavior to preserve:
 
 
 class StoryboardPlanner:
+    # Model-authored timestamps are guidance, not a reason to kill a production.
+    # Small discontinuities are snapped to the previous scene boundary.
+    MAX_AUTO_TIMING_ADJUSTMENT = 2.0
+
     def __init__(self, preferred_models: list[str]):
         self.client = XKiroClient()
         self.preferred_models = preferred_models
@@ -41,9 +45,9 @@ class StoryboardPlanner:
         try:
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
-            raise QuarantineEpisode(f"Storyboard model returned invalid JSON: {exc}") from exc
+            raise RecoverableStageError(f"Storyboard model returned invalid JSON: {exc}") from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("scenes"), list):
-            raise QuarantineEpisode("Storyboard JSON must contain a scenes array")
+            raise RecoverableStageError("Storyboard JSON must contain a scenes array")
         return payload
 
     def plan(self, episode_dir: Path) -> None:
@@ -99,35 +103,55 @@ SCRIPT:\n{script}\n\nKOKORO SENTENCE TIMINGS:\n{json.dumps(timings, ensure_ascii
         payload = self._parse_json(raw)
         scenes = payload["scenes"]
         if not scenes:
-            raise QuarantineEpisode("Storyboard contains no scenes")
+            raise RecoverableStageError("Storyboard contains no scenes")
 
         previous_end: float | None = None
+        timing_adjustments: list[dict] = []
         for index, scene in enumerate(scenes, 1):
             scene["scene_id"] = index
             try:
                 start = float(scene["start"])
                 end = float(scene["end"])
             except (KeyError, TypeError, ValueError) as exc:
-                raise QuarantineEpisode(f"Invalid timing in storyboard scene {index}") from exc
+                raise RecoverableStageError(f"Invalid timing in storyboard scene {index}") from exc
             if end <= start:
-                raise QuarantineEpisode(f"Non-positive duration in storyboard scene {index}")
-            if previous_end is not None and abs(start - previous_end) > 0.12:
-                raise QuarantineEpisode(
-                    f"Storyboard timing gap/overlap between scenes {index-1} and {index}: "
-                    f"previous_end={previous_end}, start={start}"
-                )
+                raise RecoverableStageError(f"Non-positive duration in storyboard scene {index}")
+
+            if previous_end is not None:
+                delta = start - previous_end
+                if abs(delta) <= self.MAX_AUTO_TIMING_ADJUSTMENT:
+                    if abs(delta) > 0.01:
+                        timing_adjustments.append(
+                            {
+                                "scene_id": index,
+                                "original_start": start,
+                                "normalized_start": previous_end,
+                                "delta_seconds": round(delta, 3),
+                            }
+                        )
+                    start = previous_end
+                else:
+                    raise RecoverableStageError(
+                        f"Storyboard has a material timing discontinuity between scenes {index-1} and {index}: "
+                        f"previous_end={previous_end}, start={start}, delta={delta:.3f}s"
+                    )
+
+            scene["start"] = round(start, 3)
+            scene["end"] = round(end, 3)
             previous_end = end
 
             description = str(scene.get("scene_description") or "").strip()
             if not description:
-                raise QuarantineEpisode(f"Missing scene_description in storyboard scene {index}")
+                raise RecoverableStageError(f"Missing scene_description in storyboard scene {index}")
+            scene["scene_description"] = description
+
             allowed_text = scene.get("allowed_text")
             if allowed_text is not None:
                 allowed_text = str(allowed_text).strip() or None
+                # Extra generated wording is a presentation issue, not a reason to
+                # waste a full production. Remove it deterministically.
                 if allowed_text and len(allowed_text.split()) > 4:
-                    raise QuarantineEpisode(
-                        f"Scene {index} requests too much generated text: {allowed_text!r}"
-                    )
+                    allowed_text = None
             scene["allowed_text"] = allowed_text
             scene["magnific_prompt"] = build_magnific_prompt(
                 PromptSpec(scene_description=description, allowed_text=allowed_text)
@@ -136,6 +160,7 @@ SCRIPT:\n{script}\n\nKOKORO SENTENCE TIMINGS:\n{json.dumps(timings, ensure_ascii
         payload["model"] = model
         payload["style_contract"] = "verified_episode_05_prompt_shell_v1"
         payload["scene_count"] = len(scenes)
+        payload["timing_adjustments"] = timing_adjustments
         (episode_dir / "storyboard.json").write_text(
             json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
         )
