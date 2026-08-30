@@ -43,4 +43,5 @@ privacy_status: "private"
 notify_subscribers: false
 made_for_kids: false
 thumbnail_text: "WHY CAN'T YOU START?"
-thumbnail_scene: 44
+thumbnail_prompt: |
+  A single highly expressive OTTAM cartoon character in the lower-center/right of frame desperately trying to begin an important task but physically frozen in place. The character clearly cares: a bright red heart symbol glows on the chest, while a huge heavy dark task block or weight directly in front of them feels impossible to move. Their face shows frustrated anxious effort, wide eyes and a strained mouth, with exaggerated body language. A warm orange/yellow burst behind the character creates a strong focal glow, while the outer background uses deep blue for contrast. Keep the environment extremely simple and uncluttered, like a minimal room or workspace with only one or two props. Make the central character and the impossible-to-start task large enough to read instantly on a phone screen. Leave the entire top quarter clean and visually calm for headline text. No words, letters, labels, signs, logos, UI, watermarks, or generated typography anywhere in the illustration.
