@@ -14,7 +14,7 @@ Return strict JSON only."""
 
 
 def generate_candidates(request_id: str, instruction: str = "", output_root: Path = Path("runtime/dashboard")) -> dict:
-    client = XKiroClient.from_env()
+    client = XKiroClient()
     model = client.select_free_model(PREFERRED_MODELS).id
     prompt = f"""Generate exactly 5 distinct OTTAM topic candidates and rank them by production potential.
 Optional user direction: {instruction.strip() or 'none'}
