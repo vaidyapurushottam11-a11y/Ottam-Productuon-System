@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from .orchestrator import Orchestrator, QuarantineEpisode, Stage, StateStore
+from .tts import generate_episode_narration
 
 
 def _not_wired(stage: Stage):
@@ -16,8 +17,25 @@ def _not_wired(stage: Stage):
     return handler
 
 
+def _tts_handler(episode_id: str) -> None:
+    base_url = os.getenv(
+        "KOKORO_BASE_URL",
+        "https://theplantrastore--kokoro-tts-web.modal.run",
+    )
+    voice = os.getenv("KOKORO_VOICE", "am_echo")
+    speed = float(os.getenv("KOKORO_SPEED", "1.0"))
+    generate_episode_narration(
+        episode_id,
+        base_url=base_url,
+        voice=voice,
+        speed=speed,
+    )
+
+
 def build_handlers():
-    return {stage: _not_wired(stage) for stage in Stage}
+    handlers = {stage: _not_wired(stage) for stage in Stage}
+    handlers[Stage.GENERATE_TTS] = _tts_handler
+    return handlers
 
 
 def main() -> None:
