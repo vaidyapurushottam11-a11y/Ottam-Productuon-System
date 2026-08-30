@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from .content_engine import build_content_handlers
+from .magnific_api import build_magnific_generate_handler
 from .magnific_manifest import MagnificManifestBuilder
 from .orchestrator import Orchestrator, QuarantineEpisode, Stage, StateStore
 from .render import build_render_handler
@@ -59,7 +60,7 @@ def build_handlers():
     handlers[Stage.SCRIPT_QA] = content["script_qa"]
     handlers[Stage.GENERATE_TTS] = _tts_handler
     handlers[Stage.PLAN_VISUALS] = _plan_visuals
-    # GENERATE_IMAGES remains intentionally blocked until the Magnific transport is verified.
+    handlers[Stage.GENERATE_IMAGES] = build_magnific_generate_handler(RUNTIME_ROOT)
     handlers[Stage.VISUAL_QA] = build_visual_qa_handler(RUNTIME_ROOT)
     handlers[Stage.ASSEMBLE_VIDEO] = build_render_handler(RUNTIME_ROOT)
     handlers[Stage.VIDEO_QA] = build_video_qa_handler(RUNTIME_ROOT)
