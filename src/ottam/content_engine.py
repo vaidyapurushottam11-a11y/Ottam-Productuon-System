@@ -13,6 +13,7 @@ from .xkiro import XKiroClient
 SYSTEM = """You are the editorial engine for OTTAM, a long-form YouTube channel about psychology and human behavior.
 The channel uses concise, cinematic narration and simple stickman visuals. Write for retention, not academia.
 Never invent evidence. Separate supported facts from theories. Avoid sensational medical claims.
+Avoid stock reassurance such as 'you're not broken' or equivalent filler.
 Return strict JSON only when requested."""
 
 
@@ -43,6 +44,10 @@ class ContentEngine:
         if not isinstance(data, dict):
             raise RecoverableStageError(f"{label} must return a JSON object")
         return data
+
+    def _word_bounds(self, episode_dir: Path) -> tuple[int, int]:
+        words = self._profile(episode_dir).get("episode", {}).get("target_words", {})
+        return int(words.get("min", 950)), int(words.get("max", 1200))
 
     def discover_topic(self, episode_dir: Path) -> None:
         profile = self._profile(episode_dir)
@@ -87,10 +92,7 @@ Return JSON with: thesis, known_background, claims_to_verify, contested_points, 
     def write_script(self, episode_dir: Path) -> None:
         topic = (episode_dir / "topic.json").read_text(encoding="utf-8")
         research = (episode_dir / "research.json").read_text(encoding="utf-8")
-        profile = self._profile(episode_dir)
-        words = profile.get("episode", {}).get("target_words", {})
-        min_words = int(words.get("min", 950))
-        max_words = int(words.get("max", 1200))
+        min_words, max_words = self._word_bounds(episode_dir)
         model = self._model()
         prompt = f"""Write a production-ready OTTAM narration script using ONLY the factual boundaries in the topic and research below.
 Target {min_words}-{max_words} spoken words. Strong hook in the first 10-15 seconds. Use one clear curiosity arc, escalating reveals, concrete everyday examples, and a satisfying payoff.
@@ -118,18 +120,27 @@ RESEARCH:\n{research}\n\nSCRIPT:\n{script}"""
             edits = report.get("required_edits") or []
             raise RecoverableStageError(f"Script failed evidence gate: {edits}")
 
-    def script_qa(self, episode_dir: Path) -> None:
-        script = (episode_dir / "script.txt").read_text(encoding="utf-8")
-        profile = self._profile(episode_dir)
-        words = profile.get("episode", {}).get("target_words", {})
-        min_words = int(words.get("min", 950))
-        max_words = int(words.get("max", 1200))
-        actual_words = len(script.split())
-        if not min_words <= actual_words <= max_words:
-            raise RecoverableStageError(
-                f"Script length {actual_words} words is outside target {min_words}-{max_words}"
-            )
+    def _resize_script(self, episode_dir: Path, script: str, min_words: int, max_words: int) -> str:
+        research = (episode_dir / "research.json").read_text(encoding="utf-8")
+        model = self._model()
+        target = (min_words + max_words) // 2
+        prompt = f"""Rewrite the narration below to approximately {target} words and keep it strictly inside {min_words}-{max_words} words.
+Preserve the hook, central contradiction, evidence, reveal and payoff. Remove repetition before removing story value.
+Do not add any new factual claim, statistic, diagnosis, neuroscience explanation, or source. Stay strictly inside the supplied research boundaries.
+Return narration only: no headings, notes, bullets, citations, or commentary.
 
+RESEARCH BOUNDARIES:\n{research}\n\nCURRENT SCRIPT:\n{script}"""
+        revised = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.35, max_tokens=6000).strip()
+        count = len(revised.split())
+        if not min_words <= count <= max_words:
+            raise RecoverableStageError(
+                f"Automatic script resize returned {count} words; required {min_words}-{max_words}"
+            )
+        (episode_dir / "script.txt").write_text(revised + "\n", encoding="utf-8")
+        self.fact_check(episode_dir)
+        return revised
+
+    def _audit_script(self, script: str) -> dict:
         model = self._model()
         prompt = f"""Audit the OTTAM script below. Return strict JSON with numeric 0-100 scores for hook, retention, clarity, naturalness, factual_discipline, ottam_style, plus blocking_issues and revision_instructions.
 A blocking issue is unsupported certainty, obvious factual fabrication, severe repetition, incoherence, weak payoff, generic filler, or unusable narration.
@@ -137,15 +148,53 @@ Judge this as a real YouTube upload candidate, not a prototype.
 
 SCRIPT:\n{script}"""
         raw = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.15, max_tokens=3500)
-        report = self._parse_json(raw, "script QA")
+        return self._parse_json(raw, "script QA")
+
+    def script_qa(self, episode_dir: Path) -> None:
+        script = (episode_dir / "script.txt").read_text(encoding="utf-8")
+        min_words, max_words = self._word_bounds(episode_dir)
+        actual_words = len(script.split())
+        if not min_words <= actual_words <= max_words:
+            script = self._resize_script(episode_dir, script, min_words, max_words)
+            actual_words = len(script.split())
+
+        report = self._audit_script(script)
         report["word_count"] = actual_words
-        scores = [int(report.get(k, 0)) for k in ("hook", "retention", "clarity", "naturalness", "factual_discipline", "ottam_style")]
+        score_keys = ("hook", "retention", "clarity", "naturalness", "factual_discipline", "ottam_style")
+        scores = [int(report.get(k, 0)) for k in score_keys]
         blockers = report.get("blocking_issues") or []
-        report["passed"] = not blockers and min(scores, default=0) >= 82
+        passed = not blockers and min(scores, default=0) >= 82
+
+        if not passed:
+            research = (episode_dir / "research.json").read_text(encoding="utf-8")
+            instructions = report.get("revision_instructions") or []
+            model = self._model()
+            prompt = f"""Revise this OTTAM narration to fix the QA issues below while staying inside {min_words}-{max_words} words.
+Preserve all factual boundaries. Do not add new claims. Improve hook, retention, clarity, natural spoken rhythm and payoff without adding filler.
+Return narration only.
+
+QA REVISION INSTRUCTIONS:\n{json.dumps(instructions, ensure_ascii=False)}\n\nRESEARCH BOUNDARIES:\n{research}\n\nSCRIPT:\n{script}"""
+            revised = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.3, max_tokens=6000).strip()
+            revised_count = len(revised.split())
+            if not min_words <= revised_count <= max_words:
+                raise RecoverableStageError(
+                    f"QA revision returned {revised_count} words; required {min_words}-{max_words}"
+                )
+            (episode_dir / "script.txt").write_text(revised + "\n", encoding="utf-8")
+            self.fact_check(episode_dir)
+            script = revised
+            actual_words = revised_count
+            report = self._audit_script(script)
+            scores = [int(report.get(k, 0)) for k in score_keys]
+            blockers = report.get("blocking_issues") or []
+            passed = not blockers and min(scores, default=0) >= 82
+
+        report["word_count"] = actual_words
+        report["passed"] = passed
         (episode_dir / "script_qa.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        if not report["passed"]:
+        if not passed:
             raise RecoverableStageError(
-                f"Script QA failed; min score={min(scores, default=0)}, blockers={blockers}"
+                f"Script QA failed after automatic repair; min score={min(scores, default=0)}, blockers={blockers}"
             )
 
 
