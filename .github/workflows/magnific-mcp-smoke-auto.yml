@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  smoke:
+  probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -19,19 +19,14 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install MCP SDK
-        run: npm install --no-save @modelcontextprotocol/sdk
+      - name: Probe Magnific OAuth metadata
+        run: node scripts/magnific_oauth_probe.mjs
 
-      - name: Run Magnific GPT-2 MCP smoke
-        env:
-          MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
-        run: node scripts/magnific_mcp_smoke.mjs
-
-      - name: Upload smoke evidence
+      - name: Upload OAuth probe
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: magnific-mcp-gpt2-smoke-${{ github.run_id }}
-          path: runtime/magnific-mcp-smoke/
+          name: magnific-oauth-probe-${{ github.run_id }}
+          path: runtime/magnific-oauth-probe/
           if-no-files-found: warn
           retention-days: 7
