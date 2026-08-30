@@ -53,26 +53,111 @@ jobs:
             echo "Restoring OTTAM-001 checkpoint artifact ${CHECKPOINT_ID}"
             gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${CHECKPOINT_ID}/zip" > /tmp/ottam-checkpoint.zip
             unzip -o /tmp/ottam-checkpoint.zip -d runtime
-            if [ -f runtime/state/OTTAM-001.json ]; then
-              python - <<'PY'
-          import json
-          from pathlib import Path
-          p = Path('runtime/state/OTTAM-001.json')
-          s = json.loads(p.read_text())
-          if s.get('status') != 'VIDEO_READY':
-              s['quarantined'] = False
-              s['status'] = 'PENDING'
-              s['attempts'] = 0
-              s['last_error'] = None
-              p.write_text(json.dumps(s, indent=2))
-              print(f"Resuming OTTAM-001 from stage={s.get('stage')}")
-          else:
-              print('OTTAM-001 is already VIDEO_READY')
-          PY
-            fi
           else
             echo "No previous OTTAM-001 checkpoint found; starting fresh."
           fi
+
+      - name: Normalize existing finished checkpoint to SOP Kokoro 1.0x
+        env:
+          KOKORO_BASE_URL: https://theplantrastore--kokoro-tts-web.modal.run
+        run: |
+          python - <<'PY'
+          import json
+          import shutil
+          from pathlib import Path
+          from ottam.tts import generate_episode_narration
+
+          episode = Path('runtime/episodes/OTTAM-001')
+          state_path = Path('runtime/state/OTTAM-001.json')
+          meta_path = episode / 'audio' / 'tts_metadata.json'
+          storyboard_path = episode / 'storyboard.json'
+
+          if not state_path.exists():
+              print('No checkpoint state yet; normal orchestrator will start fresh.')
+              raise SystemExit(0)
+
+          state = json.loads(state_path.read_text())
+          current_speed = None
+          if meta_path.exists():
+              try:
+                  current_speed = float(json.loads(meta_path.read_text()).get('speed'))
+              except Exception:
+                  pass
+
+          if current_speed == 1.0:
+              if state.get('status') != 'VIDEO_READY':
+                  state['quarantined'] = False
+                  state['status'] = 'PENDING'
+                  state['attempts'] = 0
+                  state['last_error'] = None
+                  state_path.write_text(json.dumps(state, indent=2))
+              print('Checkpoint already uses SOP Kokoro speed 1.0x.')
+              raise SystemExit(0)
+
+          if not storyboard_path.exists():
+              state['stage'] = 'generate_tts'
+              state['status'] = 'PENDING'
+              state['quarantined'] = False
+              state['attempts'] = 0
+              state['last_error'] = None
+              state_path.write_text(json.dumps(state, indent=2))
+              print('No existing storyboard to preserve; resuming from generate_tts.')
+              raise SystemExit(0)
+
+          storyboard = json.loads(storyboard_path.read_text())
+          scenes = storyboard.get('scenes') or []
+          if not scenes:
+              raise SystemExit('Existing storyboard has no scenes; refusing unsafe retime.')
+
+          old_end = float(scenes[-1]['end'])
+          if old_end <= 0:
+              raise SystemExit('Existing storyboard has invalid final timestamp.')
+
+          print(f'Regenerating approved narration at SOP speed 1.0x; preserving {len(scenes)} existing visual prompts/images.')
+          metadata = generate_episode_narration(
+              'OTTAM-001',
+              runtime_root=Path('runtime/episodes'),
+              base_url='https://theplantrastore--kokoro-tts-web.modal.run',
+              voice='am_echo',
+              speed=1.0,
+          )
+          new_duration = float(metadata.get('duration_seconds') or 0.0)
+          if new_duration <= 0:
+              raise SystemExit('SOP narration returned invalid duration.')
+
+          ratio = new_duration / old_end
+          previous_end = 0.0
+          for idx, scene in enumerate(scenes):
+              start = float(scene['start']) * ratio
+              end = float(scene['end']) * ratio
+              if idx == 0:
+                  start = 0.0
+              else:
+                  start = previous_end
+              if idx == len(scenes) - 1:
+                  end = new_duration
+              scene['start'] = round(start, 3)
+              scene['end'] = round(end, 3)
+              previous_end = end
+          storyboard['retimed_for_tts_speed'] = 1.0
+          storyboard['retime_ratio'] = ratio
+          storyboard_path.write_text(json.dumps(storyboard, indent=2, ensure_ascii=False))
+
+          for path in [episode / 'final.mp4', episode / 'video_qa.json']:
+              if path.exists():
+                  path.unlink()
+          render_tmp = episode / 'render_tmp'
+          if render_tmp.exists():
+              shutil.rmtree(render_tmp)
+
+          state['stage'] = 'assemble_video'
+          state['status'] = 'PENDING'
+          state['quarantined'] = False
+          state['attempts'] = 0
+          state['last_error'] = None
+          state_path.write_text(json.dumps(state, indent=2))
+          print(f'SOP narration duration={new_duration:.1f}s; storyboard retimed by ratio={ratio:.4f}; resuming at assemble_video.')
+          PY
 
       - name: Restore latest encrypted Magnific OAuth session
         env:
