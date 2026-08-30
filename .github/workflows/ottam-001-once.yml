@@ -42,6 +42,38 @@ jobs:
           pip install -e .
           npm install --no-save @modelcontextprotocol/sdk
 
+      - name: Restore latest OTTAM-001 production checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p runtime
+          CHECKPOINT_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+            --jq '.artifacts | map(select(.expired == false and (.name | startswith("ottam-001-")))) | sort_by(.created_at) | reverse | .[0].id')
+          if [ -n "$CHECKPOINT_ID" ] && [ "$CHECKPOINT_ID" != "null" ]; then
+            echo "Restoring OTTAM-001 checkpoint artifact ${CHECKPOINT_ID}"
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${CHECKPOINT_ID}/zip" > /tmp/ottam-checkpoint.zip
+            unzip -o /tmp/ottam-checkpoint.zip -d runtime
+            if [ -f runtime/state/OTTAM-001.json ]; then
+              python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('runtime/state/OTTAM-001.json')
+          s = json.loads(p.read_text())
+          if s.get('status') != 'VIDEO_READY':
+              s['quarantined'] = False
+              s['status'] = 'PENDING'
+              s['attempts'] = 0
+              s['last_error'] = None
+              p.write_text(json.dumps(s, indent=2))
+              print(f"Resuming OTTAM-001 from stage={s.get('stage')}")
+          else:
+              print('OTTAM-001 is already VIDEO_READY')
+          PY
+            fi
+          else
+            echo "No previous OTTAM-001 checkpoint found; starting fresh."
+          fi
+
       - name: Restore latest encrypted Magnific OAuth session
         env:
           GH_TOKEN: ${{ github.token }}
