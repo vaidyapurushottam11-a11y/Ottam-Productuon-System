@@ -3,12 +3,12 @@ base_url: "https://api.xkiro.com/v1"
 api_key_env: "XKIRO_API_KEY"
 free_only: true
 preferred_models:
-  - "deepseek/deepseek-v4-pro:free"
+  - "deepseek/deepseek-v4-pro"
   - "qwen/qwen3.5-397b-a17b:free"
   - "qwen/qwen3-max:free"
 model_selection:
   require_live_catalog_presence: true
-  require_free_marker: true
+  require_confirmed_zero_price: true
   reject_paid_fallbacks: true
   cache_catalog_seconds: 900
 request:
