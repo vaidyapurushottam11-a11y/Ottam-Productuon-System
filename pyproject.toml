@@ -19,6 +19,7 @@ dependencies = [
 ottam-run = "ottam.cli:main"
 ottam-youtube-authorize = "ottam.youtube_publish:authorize_main"
 ottam-youtube-publish = "ottam.youtube_publish:publish_main"
+ottam-youtube-thumbnail = "ottam.youtube_thumbnail:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
