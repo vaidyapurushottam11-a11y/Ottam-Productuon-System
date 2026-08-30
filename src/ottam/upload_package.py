@@ -15,7 +15,7 @@ PREFERRED_MODELS = ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"]
 
 
 def _client() -> tuple[XKiroClient, str]:
-    client = XKiroClient.from_env()
+    client = XKiroClient()
     model = client.select_free_model(PREFERRED_MODELS).id
     return client, model
 
