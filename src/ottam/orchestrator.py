@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from enum import Enum
 from pathlib import Path
 import json
@@ -53,7 +53,13 @@ class StateStore:
             return state
         data = json.loads(path.read_text())
         data["stage"] = Stage(data["stage"])
-        return EpisodeState(**data)
+
+        # Checkpoint files can contain workflow-only metadata such as
+        # manual_retry / previous_error. Keep the core state object forward-
+        # compatible instead of crashing when extra metadata is present.
+        allowed = {f.name for f in fields(EpisodeState)}
+        state_data = {key: value for key, value in data.items() if key in allowed}
+        return EpisodeState(**state_data)
 
     def save(self, state: EpisodeState) -> None:
         payload = asdict(state)
