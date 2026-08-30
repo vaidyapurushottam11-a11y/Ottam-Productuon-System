@@ -40,10 +40,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install OTTAM package
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install OTTAM package and Magnific MCP SDK
         run: |
           python -m pip install --upgrade pip
           pip install -e .
+          npm install --no-save @modelcontextprotocol/sdk
 
       - name: Resolve episode and production artifact
         id: resolve
@@ -126,13 +131,37 @@ jobs:
           unzip -o /tmp/youtube-auth.zip -d runtime/youtube-auth
           test -f runtime/youtube-auth/youtube-oauth-session.enc.json
 
-      - name: Upload video, metadata and thumbnail to YouTube
+      - name: Restore encrypted Magnific OAuth session for thumbnail generation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p runtime/magnific-auth
+          AUTH_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=magnific-oauth-session&per_page=100" \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id')
+          if [ -z "$AUTH_ID" ] || [ "$AUTH_ID" = "null" ]; then
+            echo "No Magnific OAuth session found; dedicated thumbnail generation cannot proceed."
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AUTH_ID}/zip" > /tmp/magnific-auth.zip
+          unzip -o /tmp/magnific-auth.zip -d runtime/magnific-auth
+          test -f runtime/magnific-auth/magnific-oauth-session.enc.json
+
+      - name: Upload video and metadata to YouTube
         env:
           OTTAM_EPISODE_ID: ${{ steps.resolve.outputs.episode_id }}
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
           YOUTUBE_OAUTH_SESSION_FILE: runtime/youtube-auth/youtube-oauth-session.enc.json
         run: ottam-youtube-publish
+
+      - name: Generate dedicated OTTAM thumbnail and replace remote thumbnail
+        env:
+          OTTAM_EPISODE_ID: ${{ steps.resolve.outputs.episode_id }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
+          MAGNIFIC_OAUTH_SESSION_FILE: runtime/magnific-auth/magnific-oauth-session.enc.json
+          YOUTUBE_OAUTH_SESSION_FILE: runtime/youtube-auth/youtube-oauth-session.enc.json
+        run: ottam-youtube-thumbnail
 
       - name: Preserve renewed YouTube OAuth session
         if: always()
@@ -143,7 +172,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
-      - name: Preserve idempotent publish state
+      - name: Preserve renewed Magnific OAuth session
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: magnific-oauth-session
+          path: runtime/magnific-auth/magnific-oauth-session.enc.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Preserve idempotent publish state and final thumbnail
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -151,5 +189,7 @@ jobs:
           path: |
             runtime/episodes/${{ steps.resolve.outputs.episode_id }}/youtube_publish_result.json
             runtime/episodes/${{ steps.resolve.outputs.episode_id }}/thumbnail.jpg
+            runtime/episodes/${{ steps.resolve.outputs.episode_id }}/thumbnail_generated.png
+            runtime/episodes/${{ steps.resolve.outputs.episode_id }}/thumbnail_metadata.json
           if-no-files-found: warn
           retention-days: 90
