@@ -37,17 +37,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
           npm install --no-save @modelcontextprotocol/sdk
-      - name: Restore latest episode artifact
+      - name: Restore latest episode and thumbnail state
         env:
           GH_TOKEN: ${{ github.token }}
           EPISODE_ID: ${{ inputs.episode_id }}
         run: |
           mkdir -p runtime
-          NAME="ottam-production-${EPISODE_ID}"
-          ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${NAME}&per_page=100" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id')
-          test -n "$ID" && test "$ID" != "null"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ID}/zip" > /tmp/episode.zip
+          BASE="ottam-production-${EPISODE_ID}"
+          BASE_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${BASE}&per_page=100" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id')
+          test -n "$BASE_ID" && test "$BASE_ID" != "null"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${BASE_ID}/zip" > /tmp/episode.zip
           unzip -o /tmp/episode.zip -d runtime
+
+          PREV="ottam-thumbnail-${EPISODE_ID}"
+          PREV_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${PREV}&per_page=100" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id')
+          if [ -n "$PREV_ID" ] && [ "$PREV_ID" != "null" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PREV_ID}/zip" > /tmp/previous-thumbnail.zip
+            unzip -o /tmp/previous-thumbnail.zip -d runtime
+          fi
       - name: Restore Magnific OAuth session
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,4 +85,5 @@ jobs:
             runtime/episodes/${{ inputs.episode_id }}/thumbnail.jpg
             runtime/episodes/${{ inputs.episode_id }}/thumbnail_metadata.json
             runtime/episodes/${{ inputs.episode_id }}/thumbnail_versions/
+            runtime/state/${{ inputs.episode_id }}.json
           retention-days: 30
