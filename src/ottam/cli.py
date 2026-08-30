@@ -5,6 +5,8 @@ import logging
 import os
 from pathlib import Path
 
+import yaml
+
 from .content_engine import build_content_handlers
 from .magnific_api import MagnificEpisodeGenerator, build_magnific_generate_handler
 from .magnific_manifest import MagnificManifestBuilder
@@ -36,17 +38,35 @@ def _not_wired(stage: Stage):
     return handler
 
 
+def _episode_profile(episode_id: str) -> dict:
+    path = Path("config/episodes") / f"{episode_id}.yaml"
+    if not path.exists():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
 def _tts_handler(episode_id: str) -> None:
     base_url = os.getenv("KOKORO_BASE_URL", "https://theplantrastore--kokoro-tts-web.modal.run")
     voice = os.getenv("KOKORO_VOICE", "am_echo")
     speed = float(os.getenv("KOKORO_SPEED", "1.0"))
-    generate_episode_narration(
+    metadata = generate_episode_narration(
         episode_id,
         runtime_root=RUNTIME_ROOT,
         base_url=base_url,
         voice=voice,
         speed=speed,
     )
+
+    target = _episode_profile(episode_id).get("episode", {}).get("target_minutes", {})
+    if target:
+        minimum = float(target.get("min", 0)) * 60.0
+        maximum = float(target.get("max", 10_000)) * 60.0
+        duration = float(metadata.get("duration_seconds") or 0.0)
+        if not minimum <= duration <= maximum:
+            raise QuarantineEpisode(
+                f"Narration duration {duration:.1f}s is outside the locked "
+                f"{minimum:.0f}-{maximum:.0f}s episode window; stopping before visual generation"
+            )
 
 
 def _plan_visuals(episode_id: str) -> None:
@@ -74,8 +94,8 @@ def build_handlers():
     content = build_content_handlers(RUNTIME_ROOT, PREFERRED_MODELS)
     handlers[Stage.DISCOVER_TOPIC] = content["discover_topic"]
     handlers[Stage.RESEARCH] = content["research"]
-    handlers[Stage.FACT_CHECK] = content["fact_check"]
     handlers[Stage.WRITE_SCRIPT] = content["write_script"]
+    handlers[Stage.FACT_CHECK] = content["fact_check"]
     handlers[Stage.SCRIPT_QA] = content["script_qa"]
     handlers[Stage.GENERATE_TTS] = _tts_handler
     handlers[Stage.PLAN_VISUALS] = _plan_visuals

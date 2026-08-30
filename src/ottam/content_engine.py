@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
+
+import yaml
 
 from .orchestrator import QuarantineEpisode, RecoverableStageError
 from .xkiro import XKiroClient
@@ -19,50 +20,133 @@ Return strict JSON only when requested."""
 class ContentEngine:
     client: XKiroClient
     preferred_models: list[str]
+    profile_root: Path = Path("config/episodes")
 
     def _model(self) -> str:
         return self.client.select_free_model(self.preferred_models).id
 
+    def _profile(self, episode_dir: Path) -> dict:
+        path = self.profile_root / f"{episode_dir.name}.yaml"
+        if not path.exists():
+            return {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, dict):
+            raise QuarantineEpisode(f"Invalid episode profile: {path}")
+        return data
+
+    @staticmethod
+    def _parse_json(text: str, label: str) -> dict:
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RecoverableStageError(f"{label} returned invalid JSON: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RecoverableStageError(f"{label} must return a JSON object")
+        return data
+
     def discover_topic(self, episode_dir: Path) -> None:
+        profile = self._profile(episode_dir)
+        episode_dir.mkdir(parents=True, exist_ok=True)
+        if profile.get("topic"):
+            payload = {
+                "winner": profile["topic"],
+                "episode": profile.get("episode", {}),
+                "source": "locked_episode_profile",
+            }
+            (episode_dir / "topic.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            return
+
         model = self._model()
         prompt = """Generate 12 evergreen OTTAM topic candidates about psychology or human behavior.
 For each include: title, central_question, why_it_is_surprising, evidence_availability, visual_potential, duplicate_risk_note.
 Rank them and choose one winner. Return JSON object with keys candidates and winner."""
         text = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.85, max_tokens=5000)
-        episode_dir.mkdir(parents=True, exist_ok=True)
-        (episode_dir / "topic.json").write_text(text)
+        self._parse_json(text, "topic discovery")
+        (episode_dir / "topic.json").write_text(text, encoding="utf-8")
 
     def research(self, episode_dir: Path) -> None:
-        topic = (episode_dir / "topic.json").read_text()
+        profile = self._profile(episode_dir)
+        if profile.get("research"):
+            payload = {
+                "research": profile["research"],
+                "editorial_guardrails": profile.get("editorial_guardrails", []),
+                "verification_status": "externally_verified_seed",
+            }
+            (episode_dir / "research.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            return
+
+        topic = (episode_dir / "topic.json").read_text(encoding="utf-8")
         model = self._model()
         prompt = f"""Using this selected topic package:\n{topic}\n\nBuild a research brief for scriptwriting.
 Do NOT claim you browsed the web. Distinguish established knowledge, contested ideas, and claims that require external verification.
 Return JSON with: thesis, known_background, claims_to_verify, contested_points, story_angles, unsafe_or_overstated_claims_to_avoid."""
         out = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.35, max_tokens=7000)
-        (episode_dir / "research.json").write_text(out)
+        self._parse_json(out, "research")
+        (episode_dir / "research.json").write_text(out, encoding="utf-8")
 
     def write_script(self, episode_dir: Path) -> None:
-        topic = (episode_dir / "topic.json").read_text()
-        research = (episode_dir / "research.json").read_text()
+        topic = (episode_dir / "topic.json").read_text(encoding="utf-8")
+        research = (episode_dir / "research.json").read_text(encoding="utf-8")
+        profile = self._profile(episode_dir)
+        words = profile.get("episode", {}).get("target_words", {})
+        min_words = int(words.get("min", 950))
+        max_words = int(words.get("max", 1200))
         model = self._model()
-        prompt = f"""Write a production-ready OTTAM narration script using the topic and research below.
-Target 7-8 minutes. Strong hook in first 15 seconds. Use a clear curiosity arc, escalating reveals, and a satisfying payoff.
-No headings, stage directions, citations, or scene labels in the spoken script. Natural American-English narration.
-Avoid unsupported certainty where the research marks claims as contested or unverified.
+        prompt = f"""Write a production-ready OTTAM narration script using ONLY the factual boundaries in the topic and research below.
+Target {min_words}-{max_words} spoken words. Strong hook in the first 10-15 seconds. Use one clear curiosity arc, escalating reveals, concrete everyday examples, and a satisfying payoff.
+No headings, stage directions, citations, scene labels, or bullet points in the spoken script. Natural American-English narration.
+Do not introduce neuroscience, diagnoses, statistics, or causal claims that are not explicitly supported by the research package.
+Where the research describes an interpretation or account, preserve that uncertainty instead of turning it into a universal fact.
 
 TOPIC:\n{topic}\n\nRESEARCH:\n{research}"""
-        script = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.72, max_tokens=9000)
-        (episode_dir / "script.txt").write_text(script)
+        script = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.68, max_tokens=6500)
+        (episode_dir / "script.txt").write_text(script.strip() + "\n", encoding="utf-8")
+
+    def fact_check(self, episode_dir: Path) -> None:
+        script = (episode_dir / "script.txt").read_text(encoding="utf-8")
+        research = (episode_dir / "research.json").read_text(encoding="utf-8")
+        model = self._model()
+        prompt = f"""Fact-check this OTTAM narration strictly against the supplied research package. Do not add outside knowledge.
+Return strict JSON with keys: passed, supported_claims, unsupported_claims, overstatements, medical_or_neuroscience_risks, required_edits.
+Set passed=false for any material spoken claim that exceeds, contradicts, or universalizes the research evidence.
+
+RESEARCH:\n{research}\n\nSCRIPT:\n{script}"""
+        raw = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.1, max_tokens=4500)
+        report = self._parse_json(raw, "fact check")
+        (episode_dir / "fact_check.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        if report.get("passed") is not True:
+            edits = report.get("required_edits") or []
+            raise RecoverableStageError(f"Script failed evidence gate: {edits}")
 
     def script_qa(self, episode_dir: Path) -> None:
-        script = (episode_dir / "script.txt").read_text()
+        script = (episode_dir / "script.txt").read_text(encoding="utf-8")
+        profile = self._profile(episode_dir)
+        words = profile.get("episode", {}).get("target_words", {})
+        min_words = int(words.get("min", 950))
+        max_words = int(words.get("max", 1200))
+        actual_words = len(script.split())
+        if not min_words <= actual_words <= max_words:
+            raise RecoverableStageError(
+                f"Script length {actual_words} words is outside target {min_words}-{max_words}"
+            )
+
         model = self._model()
         prompt = f"""Audit the OTTAM script below. Return strict JSON with numeric 0-100 scores for hook, retention, clarity, naturalness, factual_discipline, ottam_style, plus blocking_issues and revision_instructions.
-A blocking issue is unsupported certainty, obvious factual fabrication, severe repetition, incoherence, or unusable narration.
+A blocking issue is unsupported certainty, obvious factual fabrication, severe repetition, incoherence, weak payoff, generic filler, or unusable narration.
+Judge this as a real YouTube upload candidate, not a prototype.
 
 SCRIPT:\n{script}"""
-        out = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.2, max_tokens=3500)
-        (episode_dir / "script_qa.json").write_text(out)
+        raw = self.client.chat_stream(model=model, messages=[{"role":"system","content":SYSTEM},{"role":"user","content":prompt}], temperature=0.15, max_tokens=3500)
+        report = self._parse_json(raw, "script QA")
+        report["word_count"] = actual_words
+        scores = [int(report.get(k, 0)) for k in ("hook", "retention", "clarity", "naturalness", "factual_discipline", "ottam_style")]
+        blockers = report.get("blocking_issues") or []
+        report["passed"] = not blockers and min(scores, default=0) >= 82
+        (episode_dir / "script_qa.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        if not report["passed"]:
+            raise RecoverableStageError(
+                f"Script QA failed; min score={min(scores, default=0)}, blockers={blockers}"
+            )
 
 
 def build_content_handlers(root: Path, preferred_models: list[str]):
@@ -72,7 +156,7 @@ def build_content_handlers(root: Path, preferred_models: list[str]):
     return {
         "discover_topic": lambda eid: engine().discover_topic(root / eid),
         "research": lambda eid: engine().research(root / eid),
-        "fact_check": lambda eid: None,
         "write_script": lambda eid: engine().write_script(root / eid),
+        "fact_check": lambda eid: engine().fact_check(root / eid),
         "script_qa": lambda eid: engine().script_qa(root / eid),
     }
