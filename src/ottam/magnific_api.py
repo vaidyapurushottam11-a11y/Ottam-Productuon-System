@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 import json
 import os
 import time
@@ -7,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+from PIL import Image
 
 from .orchestrator import QuarantineEpisode, RecoverableStageError
 
@@ -23,10 +25,10 @@ class MagnificConfig:
 class MagnificApiClient:
     """Headless Magnific REST client for GitHub Actions.
 
-    The current public REST documentation does not expose the MCP/web-app `gpt-2`
-    image model. Until that endpoint becomes public, the production transport uses
-    the documented Seedream 4.5 REST endpoint while preserving the locked OTTAM
-    prompt style. The endpoint is configurable via MAGNIFIC_IMAGE_ENDPOINT.
+    Magnific's public REST docs currently do not expose the MCP/web-app `gpt-2`
+    image model. The transport therefore uses a documented REST image endpoint
+    while preserving OTTAM's locked prompt style. MAGNIFIC_IMAGE_ENDPOINT keeps
+    the transport swappable if/when Magnific exposes GPT-2 through REST.
     """
 
     def __init__(self, api_key: str | None = None, config: MagnificConfig | None = None):
@@ -81,14 +83,16 @@ class MagnificApiClient:
                 image_url = str(generated[0])
                 image = client.get(image_url)
                 self._raise_for_status(image, "download")
+                normalized = self._to_png(image.content)
                 metadata = {
                     "task_id": str(task_id),
                     "status": result.get("status"),
                     "generated_url": image_url,
                     "endpoint": self.config.endpoint,
                     "aspect_ratio": self.config.aspect_ratio,
+                    "stored_format": "PNG",
                 }
-                return image.content, metadata
+                return normalized, metadata
         except (RecoverableStageError, QuarantineEpisode):
             raise
         except httpx.TimeoutException as exc:
@@ -96,7 +100,18 @@ class MagnificApiClient:
         except httpx.RequestError as exc:
             raise RecoverableStageError(f"Magnific network error: {exc}") from exc
         except (ValueError, json.JSONDecodeError) as exc:
-            raise RecoverableStageError(f"Magnific returned invalid JSON: {exc}") from exc
+            raise RecoverableStageError(f"Magnific returned invalid data: {exc}") from exc
+
+    @staticmethod
+    def _to_png(content: bytes) -> bytes:
+        try:
+            with Image.open(BytesIO(content)) as source:
+                image = source.convert("RGB")
+                out = BytesIO()
+                image.save(out, format="PNG", optimize=True)
+                return out.getvalue()
+        except Exception as exc:
+            raise RecoverableStageError(f"Magnific returned a non-decodable image: {exc}") from exc
 
     def _poll(self, client: httpx.Client, base_task_url: str, task_id: str) -> dict:
         deadline = time.monotonic() + self.config.timeout_seconds
