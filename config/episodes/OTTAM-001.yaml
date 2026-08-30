@@ -3,7 +3,7 @@ episode:
   working_title: "Why You Procrastinate Even When You Care"
   production_class: upload_candidate
   target_minutes:
-    min: 4.0
+    min: 3.0
     max: 5.0
   target_words:
     min: 620
