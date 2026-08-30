@@ -1,0 +1,53 @@
+episode:
+  id: OTTAM-001
+  working_title: "Why You Procrastinate Even When You Care"
+  production_class: upload_candidate
+  target_minutes:
+    min: 4.0
+    max: 5.0
+  target_words:
+    min: 620
+    max: 760
+
+topic:
+  central_question: "If you genuinely care about a task, why can you still keep avoiding it?"
+  contradiction: "Procrastination can happen even when the goal matters and the person knows delay will make things worse."
+  reveal: "Delay can provide immediate relief from an aversive feeling even while shifting the cost to the future self."
+  payoff: "The useful target is not simply 'be more disciplined'; reduce task aversiveness, make the first action smaller, and make progress feel immediate."
+
+research:
+  verified_sources:
+    - id: steel_2007
+      title: "The nature of procrastination: a meta-analytic and theoretical review of quintessential self-regulatory failure"
+      source: "Psychological Bulletin / PubMed PMID 17201571"
+      doi: "10.1037/0033-2909.133.1.65"
+      supported_claims:
+        - "The review characterizes procrastination as a form of self-regulatory failure."
+        - "Across the meta-analysis, task aversiveness, task delay, self-efficacy, impulsiveness, conscientiousness and related self-control factors were among the stronger, more consistent correlates or predictors."
+        - "The findings were discussed as consistent with temporal motivation theory, including sensitivity to delayed outcomes."
+    - id: sirois_pychyl_2013
+      title: "Procrastination and the Priority of Short-Term Mood Regulation: Consequences for Future Self"
+      source: "Social and Personality Psychology Compass"
+      doi: "10.1111/spc3.12011"
+      supported_claims:
+        - "Sirois and Pychyl argue that procrastination often involves short-term mood repair and emotion regulation when tasks feel aversive."
+        - "Their account emphasizes a tension between relief for the present self and consequences borne by the future self."
+  contested_or_limited:
+    - "Do not present emotion regulation as the single universal cause of procrastination."
+    - "Do not reduce procrastination to one brain region, dopamine, or a neurological defect."
+    - "Do not claim that every procrastinator is anxious, perfectionistic, impulsive, or clinically impaired."
+    - "Do not diagnose ADHD, depression, anxiety, or any medical condition from ordinary procrastination."
+  story_logic:
+    - "Open on the paradox: caring about an outcome does not guarantee immediate action."
+    - "Show how an unpleasant task can create an immediate emotional cost."
+    - "Show avoidance producing immediate relief while the practical cost moves forward in time."
+    - "Use the evidence on task aversiveness, delay, self-efficacy and impulsiveness as supporting mechanisms rather than a checklist of causes."
+    - "End with practical, non-medical implications framed as reducing friction and starting smaller rather than moral judgment."
+
+editorial_guardrails:
+  - "Natural American-English narration; no academic lecture tone."
+  - "No fake neuroscience language."
+  - "No citations, headings or stage directions in spoken narration."
+  - "Hook must establish curiosity within the first 10-15 seconds."
+  - "Every paragraph must advance the central question, mechanism, reveal or payoff."
+  - "Avoid calling the viewer lazy or broken."
