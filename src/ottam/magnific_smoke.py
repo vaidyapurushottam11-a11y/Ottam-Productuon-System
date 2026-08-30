@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .magnific_api import MagnificApiClient
-from .visual_style import wrap_ottam_prompt
+from .visual_style import PromptSpec, build_magnific_prompt
 
 
 SMOKE_SCENE = (
@@ -16,7 +16,7 @@ SMOKE_SCENE = (
 def main() -> None:
     output_dir = Path("runtime/smoke")
     output_dir.mkdir(parents=True, exist_ok=True)
-    prompt = wrap_ottam_prompt(SMOKE_SCENE, allow_text=False)
+    prompt = build_magnific_prompt(PromptSpec(scene_description=SMOKE_SCENE))
     image, metadata = MagnificApiClient().generate_image(prompt)
     (output_dir / "magnific-smoke.png").write_bytes(image)
     (output_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
