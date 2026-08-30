@@ -1,21 +1,20 @@
-name: Magnific MCP GPT-2 Device Authorization
+name: Magnific MCP GPT-2 User Smoke
 
 on:
   push:
     branches:
       - test/magnific-mcp-smoke
-    paths-ignore:
-      - runtime/device-auth-request.json
 
 concurrency:
-  group: magnific-device-auth
+  group: magnific-gpt2-user-smoke
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
+  actions: read
 
 jobs:
-  authorize:
+  smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -25,19 +24,28 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Start one-time Magnific device authorization
+      - name: Install MCP SDK
+        run: npm install --no-save @modelcontextprotocol/sdk
+
+      - name: Restore encrypted Magnific OAuth session
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p runtime/magnific-auth
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9729681807/zip > /tmp/magnific-oauth.zip
+          unzip -o /tmp/magnific-oauth.zip -d runtime/magnific-auth
+          test -f runtime/magnific-auth/magnific-oauth-session.enc.json
+
+      - name: Run GPT-2 low-quality 16:9 smoke
         env:
           MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
-          GH_TOKEN: ${{ github.token }}
-          GH_REPOSITORY: ${{ github.repository }}
-          GH_BRANCH: ${{ github.ref_name }}
-        run: node scripts/magnific_device_auth.mjs
+        run: node scripts/magnific_user_oauth_smoke.mjs
 
-      - name: Upload encrypted OAuth session
+      - name: Upload smoke evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: magnific-oauth-session
-          path: runtime/magnific-auth/
+          name: magnific-gpt2-user-smoke-${{ github.run_id }}
+          path: runtime/magnific-user-smoke/
           if-no-files-found: warn
-          retention-days: 90
+          retention-days: 14
