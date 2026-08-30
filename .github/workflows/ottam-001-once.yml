@@ -95,6 +95,7 @@ jobs:
           XKIRO_API_KEY: ${{ secrets.XKIRO_API_KEY }}
           MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
           MAGNIFIC_OAUTH_SESSION_FILE: runtime/magnific-auth/magnific-oauth-session.enc.json
+          KOKORO_SPEED: "0.85"
         run: ottam-run
 
       - name: Preserve renewed Magnific OAuth session
