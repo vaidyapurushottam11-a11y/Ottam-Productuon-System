@@ -12,6 +12,12 @@ style_authority:
     - verified_previous_episode_assets
   policy: "Do not invent undocumented fonts, colors, layouts, character rules, or thumbnail conventions. Learn/lock them only from verified OTTAM references."
 
+phase:
+  current: 1
+  goal: "Autonomous topic-to-finished-video production"
+  stop_after: video_qa
+  youtube_automation_enabled: false
+
 video:
   aspect_ratio: "16:9"
   width: 1920
@@ -20,10 +26,16 @@ video:
   video_codec: h264
   audio_codec: aac
 
+content_ai:
+  provider: openai
+  api_key_env: OPENAI_API_KEY
+  model_env: OPENAI_MODEL
+
 visuals:
   format: "stickman animation"
   generation:
     provider: magnific
+    fallback_provider: null
     model: "gpt-2"
     aspect_ratio: "16:9"
     quality: "low"
@@ -34,6 +46,7 @@ visuals:
     regenerate_failed_scene_only: true
 
 thumbnail:
+  phase_1_required: false
   reference_source: "live_youtube_channel"
   generated_text_inside_ai_image: false
   typography_mode: "deterministic_overlay"
@@ -43,8 +56,10 @@ narration:
   provider: kokoro_modal
   endpoint: "https://theplantrastore--kokoro-tts-web.modal.run/"
   master_timeline: true
+  api_contract_status: pending_source_code_review
 
 publishing:
-  mode: scheduled
+  enabled: false
+  phase: 2
   require_all_quality_gates: true
   allow_publish_on_failed_gate: false
