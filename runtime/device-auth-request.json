@@ -1,7 +1,0 @@
-{
-  "purpose": "Authorize OTTAM GitHub automation to use Magnific GPT-2 MCP",
-  "verification_url": "https://auth.magnific.com/realms/mcp/device?user_code=FOEY-RKJE",
-  "user_code": "FOEY-RKJE",
-  "expires_at": "2026-08-30T09:28:40.498Z",
-  "note": "This code is short-lived and is not an access token or secret."
-}
