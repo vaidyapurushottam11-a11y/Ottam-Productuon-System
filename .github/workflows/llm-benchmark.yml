@@ -1,0 +1,43 @@
+name: OTTAM LLM Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: "OTTAM topic to benchmark across confirmed-free xKiro models"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Benchmark free models
+        env:
+          XKIRO_API_KEY: ${{ secrets.XKIRO_API_KEY }}
+          OTTAM_TEST_TOPIC: ${{ inputs.topic }}
+        run: python -m ottam.llm_benchmark
+
+      - name: Upload benchmark outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ottam-llm-benchmark-${{ github.run_id }}
+          path: runtime/benchmarks/
+          if-no-files-found: error
+          retention-days: 30

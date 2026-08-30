@@ -1,0 +1,32 @@
+name: Magnific One-Frame Smoke Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Generate one OTTAM frame
+        env:
+          MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
+        run: python -m ottam.magnific_smoke
+      - name: Upload smoke output
+        uses: actions/upload-artifact@v4
+        with:
+          name: magnific-smoke-${{ github.run_id }}
+          path: runtime/smoke/
+          if-no-files-found: error
+          retention-days: 7

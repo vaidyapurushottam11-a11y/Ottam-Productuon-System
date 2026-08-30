@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ottam-production-system"
+version = "0.1.0"
+description = "Autonomous production and publishing system for the OTTAM YouTube channel"
+requires-python = ">=3.12"
+dependencies = [
+  "PyYAML>=6.0.2",
+  "httpx>=0.28.1",
+  "tenacity>=9.0.0",
+  "Pillow>=10.4.0",
+]
+
+[project.scripts]
+ottam-run = "ottam.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
