@@ -14,6 +14,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   produce:
@@ -28,22 +29,53 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Node.js for Magnific MCP
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Install system media tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Install project
+      - name: Install project and Magnific MCP SDK
         run: |
           python -m pip install --upgrade pip
           pip install -e .
+          npm install --no-save @modelcontextprotocol/sdk
+
+      - name: Restore latest encrypted Magnific OAuth session
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p runtime/magnific-auth
+          AUTH_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=magnific-oauth-session&per_page=100" \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id')
+          if [ -z "$AUTH_ID" ] || [ "$AUTH_ID" = "null" ]; then
+            echo "No renewable Magnific OAuth session artifact is available."
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${AUTH_ID}/zip" > /tmp/magnific-oauth.zip
+          unzip -o /tmp/magnific-oauth.zip -d runtime/magnific-auth
+          test -f runtime/magnific-auth/magnific-oauth-session.enc.json
 
       - name: Run production orchestrator
         env:
           OTTAM_EPISODE_ID: ${{ inputs.episode_id }}
           XKIRO_API_KEY: ${{ secrets.XKIRO_API_KEY }}
           MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
+          MAGNIFIC_OAUTH_SESSION_FILE: runtime/magnific-auth/magnific-oauth-session.enc.json
         run: ottam-run
+
+      - name: Preserve renewed Magnific OAuth session
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: magnific-oauth-session
+          path: runtime/magnific-auth/magnific-oauth-session.enc.json
+          if-no-files-found: warn
+          retention-days: 90
 
       - name: Preserve production outputs, state and diagnostics
         if: always()
