@@ -21,9 +21,9 @@ class StoryboardPlanner:
 
     def plan(self, episode_dir: Path) -> None:
         script_path = episode_dir / "script.txt"
-        timings_path = episode_dir / "sentences.json"
+        timings_path = episode_dir / "audio" / "sentences.json"
         if not script_path.exists() or not timings_path.exists():
-            raise QuarantineEpisode("Storyboard requires script.txt and sentences.json")
+            raise QuarantineEpisode("Storyboard requires script.txt and audio/sentences.json")
         script = script_path.read_text()
         timings = json.loads(timings_path.read_text())
         model = self._model()
