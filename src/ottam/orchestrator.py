@@ -17,19 +17,11 @@ class Stage(str, Enum):
     WRITE_SCRIPT = "write_script"
     SCRIPT_QA = "script_qa"
     GENERATE_TTS = "generate_tts"
-    ALIGN_AUDIO = "align_audio"
     PLAN_VISUALS = "plan_visuals"
     GENERATE_IMAGES = "generate_images"
     VISUAL_QA = "visual_qa"
     ASSEMBLE_VIDEO = "assemble_video"
     VIDEO_QA = "video_qa"
-    GENERATE_THUMBNAIL = "generate_thumbnail"
-    THUMBNAIL_QA = "thumbnail_qa"
-    GENERATE_METADATA = "generate_metadata"
-    EDITORIAL_QA = "editorial_qa"
-    UPLOAD_YOUTUBE = "upload_youtube"
-    VERIFY_UPLOAD = "verify_upload"
-    SCHEDULE_PUBLISH = "schedule_publish"
 
 
 STAGE_ORDER = list(Stage)
@@ -119,7 +111,7 @@ class Orchestrator:
                 state.stage = STAGE_ORDER[next_index]
             self.store.save(state)
 
-        state.status = "PUBLISHED"
+        state.status = "VIDEO_READY"
         self.store.save(state)
         return state
 
