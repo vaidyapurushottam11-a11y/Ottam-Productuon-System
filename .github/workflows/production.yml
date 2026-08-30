@@ -16,6 +16,11 @@ on:
         description: "Selected scored topic JSON"
         required: true
         type: string
+      resume_failed:
+        description: "Unlock a failed/quarantined checkpoint and resume from its recorded stage"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ottam-production
@@ -73,22 +78,54 @@ jobs:
         env:
           EPISODE_ID: ${{ inputs.episode_id }}
           SELECTED_TOPIC_JSON: ${{ inputs.selected_topic_json }}
+          RESUME_FAILED: ${{ inputs.resume_failed }}
         run: |
           python - <<'PY'
           import json, os
           from pathlib import Path
+
           episode_id = os.environ["EPISODE_ID"]
           topic = json.loads(os.environ["SELECTED_TOPIC_JSON"])
+          resume_failed = os.environ.get("RESUME_FAILED", "false").lower() == "true"
           episode_dir = Path("runtime/episodes") / episode_id
           state_dir = Path("runtime/state")
           episode_dir.mkdir(parents=True, exist_ok=True)
           state_dir.mkdir(parents=True, exist_ok=True)
           topic_path = episode_dir / "topic.json"
           state_path = state_dir / f"{episode_id}.json"
+
           if not topic_path.exists():
-              topic_path.write_text(json.dumps({"winner": topic, "source": "dashboard_selection"}, indent=2, ensure_ascii=False), encoding="utf-8")
+              topic_path.write_text(
+                  json.dumps({"winner": topic, "source": "dashboard_selection"}, indent=2, ensure_ascii=False),
+                  encoding="utf-8",
+              )
+
           if not state_path.exists():
-              state_path.write_text(json.dumps({"episode_id": episode_id, "stage": "research", "status": "PENDING", "attempts": 0, "last_error": None, "quarantined": False}, indent=2), encoding="utf-8")
+              state_path.write_text(
+                  json.dumps(
+                      {
+                          "episode_id": episode_id,
+                          "stage": "research",
+                          "status": "PENDING",
+                          "attempts": 0,
+                          "last_error": None,
+                          "quarantined": False,
+                      },
+                      indent=2,
+                  ),
+                  encoding="utf-8",
+              )
+          elif resume_failed:
+              state = json.loads(state_path.read_text(encoding="utf-8"))
+              previous_error = state.get("last_error")
+              state["status"] = "PENDING"
+              state["attempts"] = 0
+              state["quarantined"] = False
+              state["last_error"] = None
+              state["manual_retry"] = True
+              if previous_error:
+                  state["previous_error"] = previous_error
+              state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
           PY
 
       - name: Setup · Restore Magnific session
