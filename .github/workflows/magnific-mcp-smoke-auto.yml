@@ -1,4 +1,4 @@
-name: Magnific MCP GPT-2 Auto Smoke
+name: Magnific MCP GPT-2 Device Authorization
 
 on:
   push:
@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  token-probe:
+  authorize:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -19,14 +19,16 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Probe Magnific MCP token audiences
-        run: node scripts/magnific_token_probe.mjs
+      - name: Start one-time Magnific device authorization
+        env:
+          MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
+        run: node scripts/magnific_device_auth.mjs
 
-      - name: Upload token probe
+      - name: Upload encrypted OAuth session
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: magnific-token-probe-${{ github.run_id }}
-          path: runtime/magnific-token-probe/
+          name: magnific-oauth-session
+          path: runtime/magnific-auth/
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 90
