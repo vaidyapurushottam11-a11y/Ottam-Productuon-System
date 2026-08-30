@@ -1,11 +1,15 @@
 name: OTTAM Autonomous Production
-run-name: OTTAM Production ${{ inputs.episode_id }}
+run-name: OTTAM Production ${{ inputs.episode_id }} — ${{ inputs.selected_topic_title }}
 
 on:
   workflow_dispatch:
     inputs:
       episode_id:
         description: "Dashboard episode id"
+        required: true
+        type: string
+      selected_topic_title:
+        description: "Selected topic title for dashboard recovery"
         required: true
         type: string
       selected_topic_json:
@@ -25,49 +29,47 @@ jobs:
   produce:
     runs-on: ubuntu-latest
     timeout-minutes: 330
+    env:
+      OTTAM_EPISODE_ID: ${{ inputs.episode_id }}
+      XKIRO_API_KEY: ${{ secrets.XKIRO_API_KEY }}
+      MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
+      MAGNIFIC_OAUTH_SESSION_FILE: runtime/magnific-auth/magnific-oauth-session.enc.json
+      KOKORO_SPEED: "1.0"
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
+      - name: Setup · Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Set up Node.js for Magnific MCP
+      - name: Setup · Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-
-      - name: Install system media tools
+      - name: Setup · Media tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-
-      - name: Install project and Magnific MCP SDK
+      - name: Setup · Project dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e .
           npm install --no-save @modelcontextprotocol/sdk
 
-      - name: Restore this episode checkpoint when available
+      - name: Setup · Restore episode checkpoint
         env:
           GH_TOKEN: ${{ github.token }}
           EPISODE_ID: ${{ inputs.episode_id }}
         run: |
           mkdir -p runtime
           ARTIFACT_NAME="ottam-production-${EPISODE_ID}"
-          CHECKPOINT_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}&per_page=100" \
-            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id')
+          CHECKPOINT_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}&per_page=100" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id')
           if [ -n "$CHECKPOINT_ID" ] && [ "$CHECKPOINT_ID" != "null" ]; then
-            echo "Restoring episode checkpoint ${CHECKPOINT_ID}"
             gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${CHECKPOINT_ID}/zip" > /tmp/episode-checkpoint.zip
             unzip -o /tmp/episode-checkpoint.zip -d runtime
-          else
-            echo "No prior checkpoint for ${EPISODE_ID}; starting from selected topic."
           fi
 
-      - name: Seed selected topic exactly once
+      - name: Setup · Seed selected topic
         env:
           EPISODE_ID: ${{ inputs.episode_id }}
           SELECTED_TOPIC_JSON: ${{ inputs.selected_topic_json }}
@@ -75,7 +77,6 @@ jobs:
           python - <<'PY'
           import json, os
           from pathlib import Path
-
           episode_id = os.environ["EPISODE_ID"]
           topic = json.loads(os.environ["SELECTED_TOPIC_JSON"])
           episode_dir = Path("runtime/episodes") / episode_id
@@ -84,27 +85,18 @@ jobs:
           state_dir.mkdir(parents=True, exist_ok=True)
           topic_path = episode_dir / "topic.json"
           state_path = state_dir / f"{episode_id}.json"
-
           if not topic_path.exists():
               topic_path.write_text(json.dumps({"winner": topic, "source": "dashboard_selection"}, indent=2, ensure_ascii=False), encoding="utf-8")
           if not state_path.exists():
-              state_path.write_text(json.dumps({
-                  "episode_id": episode_id,
-                  "stage": "research",
-                  "status": "PENDING",
-                  "attempts": 0,
-                  "last_error": None,
-                  "quarantined": False,
-              }, indent=2), encoding="utf-8")
+              state_path.write_text(json.dumps({"episode_id": episode_id, "stage": "research", "status": "PENDING", "attempts": 0, "last_error": None, "quarantined": False}, indent=2), encoding="utf-8")
           PY
 
-      - name: Restore latest encrypted Magnific OAuth session
+      - name: Setup · Restore Magnific session
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p runtime/magnific-auth
-          AUTH_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=magnific-oauth-session&per_page=100" \
-            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id')
+          AUTH_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=magnific-oauth-session&per_page=100" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id')
           if [ -z "$AUTH_ID" ] || [ "$AUTH_ID" = "null" ]; then
             echo "No renewable Magnific OAuth session artifact is available."
             exit 1
@@ -113,16 +105,38 @@ jobs:
           unzip -o /tmp/magnific-oauth.zip -d runtime/magnific-auth
           test -f runtime/magnific-auth/magnific-oauth-session.enc.json
 
-      - name: Run production orchestrator
-        env:
-          OTTAM_EPISODE_ID: ${{ inputs.episode_id }}
-          XKIRO_API_KEY: ${{ secrets.XKIRO_API_KEY }}
-          MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
-          MAGNIFIC_OAUTH_SESSION_FILE: runtime/magnific-auth/magnific-oauth-session.enc.json
-          KOKORO_SPEED: "1.0"
+      - name: Stage 1/10 · Research
+        env: { OTTAM_STOP_AFTER_STAGE: research }
+        run: ottam-run
+      - name: Stage 2/10 · Write script
+        env: { OTTAM_STOP_AFTER_STAGE: write_script }
+        run: ottam-run
+      - name: Stage 3/10 · Fact check
+        env: { OTTAM_STOP_AFTER_STAGE: fact_check }
+        run: ottam-run
+      - name: Stage 4/10 · Script QA
+        env: { OTTAM_STOP_AFTER_STAGE: script_qa }
+        run: ottam-run
+      - name: Stage 5/10 · Generate narration
+        env: { OTTAM_STOP_AFTER_STAGE: generate_tts }
+        run: ottam-run
+      - name: Stage 6/10 · Plan visuals
+        env: { OTTAM_STOP_AFTER_STAGE: plan_visuals }
+        run: ottam-run
+      - name: Stage 7/10 · Generate images
+        env: { OTTAM_STOP_AFTER_STAGE: generate_images }
+        run: ottam-run
+      - name: Stage 8/10 · Visual QA
+        env: { OTTAM_STOP_AFTER_STAGE: visual_qa }
+        run: ottam-run
+      - name: Stage 9/10 · Assemble video
+        env: { OTTAM_STOP_AFTER_STAGE: assemble_video }
+        run: ottam-run
+      - name: Stage 10/10 · Video QA
+        env: { OTTAM_STOP_AFTER_STAGE: video_qa }
         run: ottam-run
 
-      - name: Require VIDEO_READY before packaging
+      - name: Packaging · Require VIDEO_READY
         env:
           EPISODE_ID: ${{ inputs.episode_id }}
         run: |
@@ -134,23 +148,12 @@ jobs:
           if state.get("status") != "VIDEO_READY" or state.get("quarantined"):
               raise SystemExit(f"Episode is not VIDEO_READY: {state}")
           PY
+      - name: Packaging · YouTube text
+        run: test -f "runtime/episodes/${OTTAM_EPISODE_ID}/upload_package.json" || ottam-upload-package
+      - name: Packaging · Thumbnail
+        run: test -f "runtime/episodes/${OTTAM_EPISODE_ID}/thumbnail.jpg" || ottam-thumbnail-generate
 
-      - name: Generate manual YouTube upload package
-        env:
-          OTTAM_EPISODE_ID: ${{ inputs.episode_id }}
-          XKIRO_API_KEY: ${{ secrets.XKIRO_API_KEY }}
-        run: |
-          test -f "runtime/episodes/${OTTAM_EPISODE_ID}/upload_package.json" || ottam-upload-package
-
-      - name: Generate first dedicated thumbnail
-        env:
-          OTTAM_EPISODE_ID: ${{ inputs.episode_id }}
-          MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
-          MAGNIFIC_OAUTH_SESSION_FILE: runtime/magnific-auth/magnific-oauth-session.enc.json
-        run: |
-          test -f "runtime/episodes/${OTTAM_EPISODE_ID}/thumbnail.jpg" || ottam-thumbnail-generate
-
-      - name: Preserve renewed Magnific OAuth session
+      - name: Finalize · Preserve Magnific session
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -158,8 +161,7 @@ jobs:
           path: runtime/magnific-auth/magnific-oauth-session.enc.json
           if-no-files-found: warn
           retention-days: 90
-
-      - name: Preserve episode outputs and checkpoint
+      - name: Finalize · Preserve outputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
