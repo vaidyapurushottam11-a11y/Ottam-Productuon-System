@@ -42,6 +42,7 @@ jobs:
         env:
           OTTAM_EPISODE_ID: ${{ inputs.episode_id }}
           XKIRO_API_KEY: ${{ secrets.XKIRO_API_KEY }}
+          MAGNIFIC_API_KEY: ${{ secrets.MAGNIFIC_API_KEY }}
         run: ottam-run
 
       - name: Preserve production outputs, state and diagnostics
