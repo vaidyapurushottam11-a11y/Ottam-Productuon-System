@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from flask import jsonify
+from flask import jsonify, send_file
 
 from . import dashboard as dashboard
 
@@ -153,9 +153,41 @@ def job_status_cold_safe(episode_id: str):
     return jsonify(_snapshot_without_blocking(episode_id, run))
 
 
-# Keep the existing URLs and UI untouched; only swap the two view functions that
-# previously performed a large synchronous artifact download on a cold request.
+def episode_file_cold_safe(episode_id: str, kind: str):
+    # Flask resolves relative send_file paths against app.root_path, while the
+    # dashboard cache is created relative to the service working directory.
+    # Resolve once here so restored files are served from the exact path that
+    # _assets_ready() checked.
+    episode_dir = (dashboard._episode_cache(episode_id) / "episodes" / episode_id).resolve()
+    mapping = {
+        "video": (episode_dir / "final.mp4", "video/mp4", f"{episode_id}.mp4"),
+        "thumbnail": (episode_dir / "thumbnail.jpg", "image/jpeg", f"{episode_id}-thumbnail.jpg"),
+        "captions": (episode_dir / "audio" / "captions.srt", "text/plain", f"{episode_id}.srt"),
+    }
+    if kind not in mapping:
+        return jsonify({"error": "unknown file kind"}), 404
+
+    path, mimetype, name = mapping[kind]
+    if not path.is_file():
+        run = dashboard._find_run("production.yml", f"OTTAM Production {episode_id}")
+        if run and run.get("status") == "completed" and run.get("conclusion") == "success":
+            _ensure_restore(episode_id, run)
+            return jsonify({"error": "asset is still restoring from GitHub", "status": "RESTORING_ASSETS"}), 503
+        return jsonify({"error": "file not ready"}), 404
+
+    return send_file(
+        str(path),
+        mimetype=mimetype,
+        download_name=name,
+        as_attachment=(kind != "video"),
+        conditional=True,
+    )
+
+
+# Keep the existing URLs and UI untouched; swap only the views that need cold
+# recovery or absolute-path file serving.
 dashboard.app.view_functions["current_job"] = current_job_cold_safe
 dashboard.app.view_functions["job_status"] = job_status_cold_safe
+dashboard.app.view_functions["episode_file"] = episode_file_cold_safe
 
 app = dashboard.app
