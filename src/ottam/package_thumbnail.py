@@ -4,84 +4,35 @@ import json
 import os
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFont
+from PIL import Image, ImageEnhance
 
 from .magnific_api import MagnificApiClient
 
 REFERENCE_STYLE = """OTTAM YouTube thumbnail style:
-- purpose-built thumbnail illustration, never a random video frame
+- purpose-built YouTube thumbnail, never a random video frame
 - one dominant expressive stickman/action readable instantly on a phone
 - one simple visual metaphor, minimal clutter
 - saturated warm orange/yellow focal lighting against deep blue contrast
 - hand-drawn cartoon/explainer feel with bold black outlines and expressive face/body language
-- reserve the top 22-28% as calm space for headline text
-- absolutely no generated words, letters, labels, logos, watermarks, UI or signage
+- strong visual hierarchy: hook text and main subject must both be readable at phone size
+- hook text should feel designed as part of the thumbnail, not pasted on afterward
+- large bold condensed display lettering, high contrast, thick dark outline/shadow where useful
+- keep important subject and hook text inside safe margins; do not crowd the edges
+- no logos, watermarks, UI, signage, labels, or any text except the exact requested hook
 - 16:9 composition
 """
 
 
-def _font(size: int):
-    for path in (
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-    ):
-        if Path(path).exists():
-            return ImageFont.truetype(path, size)
-    return ImageFont.load_default()
-
-
 def _fit(img: Image.Image) -> Image.Image:
+    """Normalize Magnific output for YouTube without redesigning the image.
+
+    The composition, including typography, is generated entirely by Magnific.
+    We only resize and lightly normalize the finished image for delivery.
+    """
     img = img.convert("RGB")
-    w, h = 1280, 720
-    ratio = w / h
-    current = img.width / img.height
-    if current > ratio:
-        crop_w = int(img.height * ratio)
-        left = (img.width - crop_w) // 2
-        img = img.crop((left, 0, left + crop_w, img.height))
-    else:
-        crop_h = int(img.width / ratio)
-        top = (img.height - crop_h) // 2
-        img = img.crop((0, top, img.width, top + crop_h))
-    img = img.resize((w, h), Image.Resampling.LANCZOS)
-    img = ImageEnhance.Contrast(img).enhance(1.12)
-    img = ImageEnhance.Color(img).enhance(1.08)
-    return ImageEnhance.Sharpness(img).enhance(1.08)
-
-
-def _headline(img: Image.Image, text: str) -> Image.Image:
-    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(layer)
-    words = text.upper().split()
-    best_font = _font(92)
-    lines = [" ".join(words)]
-    for size in range(132, 67, -4):
-        font = _font(size)
-        candidate: list[str] = []
-        current = ""
-        for word in words:
-            test = f"{current} {word}".strip()
-            box = draw.textbbox((0, 0), test, font=font)
-            if current and box[2] > 1180:
-                candidate.append(current)
-                current = word
-            else:
-                current = test
-        if current:
-            candidate.append(current)
-        if len(candidate) <= 2:
-            best_font, lines = font, candidate
-            break
-    y = 20
-    for line in lines:
-        box = draw.textbbox((0, 0), line, font=best_font)
-        width = box[2] - box[0]
-        x = (1280 - width) // 2
-        draw.text((x + 8, y + 10), line, font=best_font, fill=(125, 32, 10, 255), stroke_width=15, stroke_fill=(0, 0, 0, 255))
-        draw.text((x, y), line, font=best_font, fill=(255, 224, 38, 255), stroke_width=12, stroke_fill=(5, 5, 5, 255))
-        y += (box[3] - box[1]) + 2
-    return Image.alpha_composite(img.convert("RGBA"), layer).convert("RGB")
+    img = img.resize((1280, 720), Image.Resampling.LANCZOS)
+    img = ImageEnhance.Contrast(img).enhance(1.05)
+    return ImageEnhance.Sharpness(img).enhance(1.05)
 
 
 def generate_thumbnail(
@@ -100,20 +51,42 @@ def generate_thumbnail(
         raise RuntimeError("Upload package is missing thumbnail_prompt or thumbnail_text")
 
     extra = instruction.strip()
-    prompt = f"{REFERENCE_STYLE}\n\nEPISODE CONCEPT:\n{base_prompt}"
+    exact_hook = headline.upper()
+    prompt = f"""{REFERENCE_STYLE}
+
+EPISODE CONCEPT:
+{base_prompt}
+
+HOOK TEXT — MUST BE RENDERED INSIDE THE IMAGE:
+{exact_hook}
+
+TYPOGRAPHY REQUIREMENTS:
+- Render the hook text exactly as written above, with the same words and spelling.
+- Do not add, remove, paraphrase, repeat, or invent any other words.
+- Make the hook a major designed element of the composition, balanced with the main visual subject.
+- Use 1-2 short lines maximum when possible; keep it immediately readable on a small phone thumbnail.
+- Prefer bold yellow/cream/white lettering with a thick dark outline or shadow when it improves separation.
+- Position text where it naturally works with the subject; do not simply reserve an empty strip at the top.
+- The finished result must already look like a publish-ready YouTube thumbnail. No later text overlay will be added.
+"""
     if extra:
-        prompt += f"\n\nUSER REVISION INSTRUCTION:\n{extra}\nKeep all other OTTAM thumbnail rules unchanged."
-    prompt += "\n\nDo not render the headline; it will be added in code."
+        prompt += f"""
+
+USER REVISION INSTRUCTION:
+{extra}
+Apply this revision while keeping the exact hook text and all OTTAM thumbnail rules unchanged.
+"""
 
     content, metadata = MagnificApiClient().generate_image(prompt)
     versions = episode_dir / "thumbnail_versions"
     versions.mkdir(parents=True, exist_ok=True)
     existing = sorted(versions.glob("thumbnail_*.jpg"))
     version = len(existing) + 1
+
     generated_path = versions / f"generated_{version:03d}.png"
     generated_path.write_bytes(content)
 
-    image = _headline(_fit(Image.open(generated_path)), headline)
+    image = _fit(Image.open(generated_path))
     version_path = versions / f"thumbnail_{version:03d}.jpg"
     image.save(version_path, "JPEG", quality=94, optimize=True, subsampling=0)
     if version_path.stat().st_size > 1_950_000:
@@ -125,13 +98,20 @@ def generate_thumbnail(
         "episode_id": episode_id,
         "version": version,
         "instruction": extra,
-        "headline": headline,
+        "headline": exact_hook,
+        "headline_rendered_by": "magnific",
+        "post_generation_text_overlay": False,
         "prompt": prompt,
         "magnific": metadata,
         "output": str(output),
     }
-    (episode_dir / "thumbnail_metadata.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"OTTAM_THUMBNAIL_READY episode={episode_id} version={version} credits={metadata.get('credits')}", flush=True)
+    (episode_dir / "thumbnail_metadata.json").write_text(
+        json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    print(
+        f"OTTAM_THUMBNAIL_READY episode={episode_id} version={version} credits={metadata.get('credits')}",
+        flush=True,
+    )
     return output
 
 
