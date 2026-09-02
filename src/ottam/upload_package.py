@@ -58,7 +58,7 @@ Rules:
 - hashtags: 3-6 highly relevant items
 - tags: 12-25 useful search variants, no spam
 - thumbnail_text: 2-5 punchy words, complementary to title rather than repeating it
-- thumbnail_prompt: one purpose-built 16:9 OTTAM thumbnail scene; one dominant expressive stickman/action, one clear visual metaphor, saturated orange/yellow focal light against deep blue contrast, simple uncluttered background, clean top area for headline, absolutely no generated text/signage/logos/watermarks
+- thumbnail_prompt: one purpose-built 16:9 OTTAM thumbnail scene; one dominant expressive stickman/action, one clear visual metaphor, simple uncluttered composition, and a topic-driven high-visibility color palette. Do NOT default to a dark navy/deep-blue background. Prefer bright or mid-tone backgrounds when they improve phone-size readability. Deliberately vary palettes between episodes (cream, warm yellow, orange, coral, red, mint, teal, cyan, sky blue, lavender, magenta, lime, or another concept-appropriate palette are all allowed). Describe a composition with strong subject/background separation and enough negative space for integrated hook typography. Do not request any logos, watermarks, UI, signage, labels, or extra text; the exact hook text will be supplied separately to Magnific and rendered as part of the final thumbnail.
 
 EPISODE:\n{context}"""
     raw = client.chat_stream(
