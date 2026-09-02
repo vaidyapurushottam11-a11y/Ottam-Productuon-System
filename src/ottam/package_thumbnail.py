@@ -12,12 +12,16 @@ REFERENCE_STYLE = """OTTAM YouTube thumbnail style:
 - purpose-built YouTube thumbnail, never a random video frame
 - one dominant expressive stickman/action readable instantly on a phone
 - one simple visual metaphor, minimal clutter
-- saturated warm orange/yellow focal lighting against deep blue contrast
 - hand-drawn cartoon/explainer feel with bold black outlines and expressive face/body language
 - strong visual hierarchy: hook text and main subject must both be readable at phone size
 - hook text should feel designed as part of the thumbnail, not pasted on afterward
-- large bold condensed display lettering, high contrast, thick dark outline/shadow where useful
+- large bold condensed display lettering, high contrast, thick outline/shadow where useful
 - keep important subject and hook text inside safe margins; do not crowd the edges
+- use a topic-driven palette with strong foreground/background separation; do NOT default to dark navy/deep-blue backgrounds
+- backgrounds should usually be bright, mid-tone, or strongly contrasting rather than uniformly dark
+- deliberately vary palette between episodes: cream, off-white, warm yellow, orange, coral, red, mint, teal, cyan, sky blue, lavender, magenta, lime, or other concept-appropriate colors are all allowed
+- dark blue may be used only when the episode concept genuinely benefits from it and the overall thumbnail remains bright and highly legible
+- avoid repeating the same blue/orange look across consecutive thumbnails
 - no logos, watermarks, UI, signage, labels, or any text except the exact requested hook
 - 16:9 composition
 """
@@ -60,12 +64,22 @@ EPISODE CONCEPT:
 HOOK TEXT — MUST BE RENDERED INSIDE THE IMAGE:
 {exact_hook}
 
+COLOR / VISIBILITY REQUIREMENTS:
+- Choose the palette from the episode concept, not from a fixed OTTAM background color.
+- Do NOT automatically use a dark navy or deep-blue background.
+- Prefer a bright or mid-tone background when it gives stronger phone-size visibility.
+- The main character/object must separate clearly from the background at a glance.
+- The hook text must have very high luminance/edge contrast against whatever sits behind it.
+- Avoid large low-detail dark areas. The thumbnail should remain visually clear at small size and in YouTube dark mode.
+- Treat palette variety as part of the channel design: this thumbnail should not look like a recolor of the previous episode.
+
 TYPOGRAPHY REQUIREMENTS:
 - Render the hook text exactly as written above, with the same words and spelling.
 - Do not add, remove, paraphrase, repeat, or invent any other words.
 - Make the hook a major designed element of the composition, balanced with the main visual subject.
 - Use 1-2 short lines maximum when possible; keep it immediately readable on a small phone thumbnail.
-- Prefer bold yellow/cream/white lettering with a thick dark outline or shadow when it improves separation.
+- Choose text color based on the background for maximum contrast; yellow, white, cream, black, red, orange, or another high-contrast choice is allowed.
+- Use a thick contrasting outline or shadow when it improves separation.
 - Position text where it naturally works with the subject; do not simply reserve an empty strip at the top.
 - The finished result must already look like a publish-ready YouTube thumbnail. No later text overlay will be added.
 """
@@ -101,6 +115,7 @@ Apply this revision while keeping the exact hook text and all OTTAM thumbnail ru
         "headline": exact_hook,
         "headline_rendered_by": "magnific",
         "post_generation_text_overlay": False,
+        "palette_policy": "topic_driven_high_visibility_v2",
         "prompt": prompt,
         "magnific": metadata,
         "output": str(output),
