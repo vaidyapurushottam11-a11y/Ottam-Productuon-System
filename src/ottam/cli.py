@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from .content_engine import build_content_handlers
+from .dynamic_content import build_dynamic_content_handlers, shorten_episode_for_runtime
 from .magnific_api import MagnificEpisodeGenerator, build_magnific_generate_handler
 from .magnific_manifest import MagnificManifestBuilder
 from .orchestrator import Orchestrator, QuarantineEpisode, RecoverableStageError, Stage, StateStore
@@ -19,6 +19,7 @@ from .visual_qa import VisualQA
 
 RUNTIME_ROOT = Path("runtime/episodes")
 PREFERRED_MODELS = ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"]
+MAX_RUNTIME_SECONDS = 15 * 60
 
 
 def _not_wired(stage: Stage):
@@ -39,13 +40,25 @@ def _tts_handler(episode_id: str) -> None:
     voice = os.getenv("KOKORO_VOICE", "am_echo")
     speed = float(os.getenv("KOKORO_SPEED", "1.0"))
     metadata = generate_episode_narration(episode_id, runtime_root=RUNTIME_ROOT, base_url=base_url, voice=voice, speed=speed)
+    duration = float(metadata.get("duration_seconds") or 0.0)
+
+    if duration > MAX_RUNTIME_SECONDS:
+        shorten_episode_for_runtime(episode_id, RUNTIME_ROOT, PREFERRED_MODELS, duration)
+        metadata = generate_episode_narration(episode_id, runtime_root=RUNTIME_ROOT, base_url=base_url, voice=voice, speed=speed)
+        duration = float(metadata.get("duration_seconds") or 0.0)
+        if duration > MAX_RUNTIME_SECONDS:
+            raise RecoverableStageError(
+                f"Narration is still {duration:.1f}s after runtime-aware shortening; maximum allowed is {MAX_RUNTIME_SECONDS}s"
+            )
+
     target = _episode_profile(episode_id).get("episode", {}).get("target_minutes", {})
     if target:
         minimum = float(target.get("min", 0)) * 60.0
-        maximum = float(target.get("max", 10_000)) * 60.0
-        duration = float(metadata.get("duration_seconds") or 0.0)
+        maximum = min(float(target.get("max", 15)) * 60.0, MAX_RUNTIME_SECONDS)
         if not minimum <= duration <= maximum:
-            raise QuarantineEpisode(f"Narration duration {duration:.1f}s is outside the locked {minimum:.0f}-{maximum:.0f}s episode window; stopping before visual generation")
+            raise QuarantineEpisode(
+                f"Narration duration {duration:.1f}s is outside this episode's explicit {minimum:.0f}-{maximum:.0f}s window"
+            )
 
 
 def _plan_visuals(episode_id: str) -> None:
@@ -66,7 +79,7 @@ def _visual_qa_handler(episode_id: str) -> None:
 
 def build_handlers():
     handlers = {stage: _not_wired(stage) for stage in Stage}
-    content = build_content_handlers(RUNTIME_ROOT, PREFERRED_MODELS)
+    content = build_dynamic_content_handlers(RUNTIME_ROOT, PREFERRED_MODELS)
     handlers[Stage.DISCOVER_TOPIC] = content["discover_topic"]
     handlers[Stage.RESEARCH] = content["research"]
     handlers[Stage.WRITE_SCRIPT] = content["write_script"]
