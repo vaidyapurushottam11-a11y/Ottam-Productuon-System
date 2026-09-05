@@ -137,8 +137,6 @@ jobs:
           state = json.loads(state_path.read_text(encoding="utf-8"))
 
           if revision_instruction:
-              # A requested edit should reuse topic/research but regenerate script,
-              # fact-check and QA before asking for approval again.
               (episode_dir / "script_revision_instruction.txt").write_text(revision_instruction, encoding="utf-8")
               state["stage"] = "write_script"
               state["status"] = "PENDING"
@@ -151,7 +149,6 @@ jobs:
               state["quarantined"] = False
               state["last_error"] = None
           elif script_approved and state.get("status") == "AWAITING_SCRIPT_APPROVAL":
-              # Script QA already advanced the checkpoint to generate_tts.
               state["status"] = "PENDING"
               state["attempts"] = 0
               state["last_error"] = None
@@ -281,6 +278,14 @@ jobs:
         if: ${{ inputs.script_approved }}
         run: test -f "runtime/episodes/${OTTAM_EPISODE_ID}/thumbnail.jpg" || ottam-thumbnail-generate
 
+      - name: Finalize · Mark script review checkpoint
+        if: ${{ !inputs.script_approved && fromJSON(steps.resume_stage.outputs.start_index) <= 4 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ottam-script-review-${{ inputs.episode_id }}
+          path: runtime/state/${{ inputs.episode_id }}.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Finalize · Preserve Magnific session
         if: ${{ always() && inputs.script_approved }}
         uses: actions/upload-artifact@v4
