@@ -2,18 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from flask import jsonify
+
 from . import dashboard
+from . import dashboard_cold_recovery as cold
 from . import dashboard_history as history
 from . import dashboard_script_review as review
 
+BUILD_LABEL = "script-review-state-v2"
+
 
 def is_script_review_checkpoint(run: dict[str, Any], episode_id: str) -> bool:
-    """Classify a successful workflow pause as review, never as VIDEO_READY.
-
-    GitHub marks the intentional Script QA pause as a successful workflow run.
-    Therefore conclusion=success cannot be used as the definition of a completed
-    video. Detect the explicit review checkpoint instead.
-    """
+    """Return True only for the intentional post-Script-QA approval pause."""
     if run.get("status") != "completed" or run.get("conclusion") != "success":
         return False
 
@@ -23,40 +23,63 @@ def is_script_review_checkpoint(run: dict[str, Any], episode_id: str) -> bool:
     if "[VIDEO_READY]" in title or "[CONTINUE]" in title:
         return False
 
-    # Fast path: the dedicated review artifact is the strongest signal when the
-    # GitHub artifact index has caught up.
+    # A real finished video wins over every review signal.
+    try:
+        progress = dashboard._run_progress(run)
+    except Exception:
+        progress = {"timeline": []}
+    timeline = progress.get("timeline") or []
+    if any(
+        str(step.get("name") or "") == "Packaging · Require VIDEO_READY"
+        and step.get("conclusion") == "success"
+        for step in timeline
+    ):
+        return False
+
+    # Strongest review signal: dedicated checkpoint artifact.
     try:
         if dashboard._artifact(int(run["id"]), f"ottam-script-review-{episode_id}"):
             return True
     except Exception:
         pass
 
-    # Robust fallback for eventual-consistency / artifact-index delays. The
-    # workflow step is visible immediately and is exactly what the screenshots
-    # show as successful for an intentional review pause.
-    progress = dashboard._run_progress(run)
-    timeline = progress.get("timeline") or []
-    review_step_succeeded = any(
+    # Immediate signal visible before artifact indexing catches up.
+    if any(
         str(step.get("name") or "") == "Finalize · Mark script review checkpoint"
         and step.get("conclusion") == "success"
         for step in timeline
-    )
-    video_ready_gate_succeeded = any(
-        str(step.get("name") or "") == "Packaging · Require VIDEO_READY"
-        and step.get("conclusion") == "success"
-        for step in timeline
-    )
-    return review_step_succeeded and not video_ready_gate_succeeded
+    ):
+        return True
+
+    # Last-resort source of truth for older/cold runs: inspect the preserved state.
+    # This only runs when the cheap signals above were inconclusive.
+    try:
+        cache = dashboard._hydrate_episode_cache(episode_id, run)
+        state = dashboard._episode_state(cache, episode_id) or {}
+        if state.get("status") == "AWAITING_SCRIPT_APPROVAL":
+            return True
+        package = cache / "episodes" / episode_id / "upload_package.json"
+        video = cache / "episodes" / episode_id / "final.mp4"
+        if state.get("status") == "VIDEO_READY" and package.exists() and video.exists():
+            return False
+    except Exception:
+        pass
+
+    return False
 
 
 def _review_marker(run: dict[str, Any], episode_id: str) -> dict[str, Any] | None:
     return {"detected": True} if is_script_review_checkpoint(run, episode_id) else None
 
 
-# The existing script-review snapshot/cold-recovery wrappers call this function
-# dynamically, so replacing it fixes current-job, explicit job polling and cold
-# Render recovery without re-registering routes.
 review._review_marker = _review_marker
+
+
+def snapshot_for_run(episode_id: str, run: dict[str, Any]) -> dict[str, Any]:
+    """Single dashboard source of truth for a production workflow run."""
+    if is_script_review_checkpoint(run, episode_id):
+        return review._review_snapshot(episode_id, run)
+    return cold._original_snapshot(episode_id, run) if hasattr(cold, "_original_snapshot") else cold._snapshot_without_blocking(episode_id, run)
 
 
 def _history_rows_fixed() -> list[dict[str, Any]]:
@@ -106,7 +129,6 @@ def _history_rows_fixed() -> list[dict[str, Any]]:
             "run_url": run.get("html_url"),
             "awaiting_script_approval": awaiting_review,
         }
-        # Download buttons must only exist for genuinely finished videos.
         if status == "COMPLETED":
             row["video_url"] = f"/files/{episode_id}/video"
             row["thumbnail_url"] = f"/files/{episode_id}/thumbnail"
@@ -117,6 +139,100 @@ def _history_rows_fixed() -> list[dict[str, Any]]:
     return rows
 
 
-# production_history() resolves _history_rows at request time, so replacing the
-# module function fixes the existing /api/history route as well.
 history._history_rows = _history_rows_fixed
+
+
+def current_job_fixed():
+    runs = dashboard._runs("production.yml")
+    if not runs:
+        return jsonify({"active": False, "build": BUILD_LABEL})
+    active = next((r for r in runs if r.get("status") != "completed"), None)
+    run = active or runs[0]
+    episode_id = dashboard._episode_from_run(run)
+    if not episode_id:
+        return jsonify({"active": False, "build": BUILD_LABEL})
+    snapshot = snapshot_for_run(episode_id, run)
+    snapshot["active"] = run.get("status") != "completed"
+    snapshot["build"] = BUILD_LABEL
+    return jsonify(snapshot)
+
+
+def job_status_fixed(episode_id: str):
+    run = dashboard._find_run("production.yml", f"OTTAM Production {episode_id}")
+    if not run:
+        payload = dashboard._production_snapshot(episode_id, run=None)
+        payload["build"] = BUILD_LABEL
+        return jsonify(payload)
+    payload = snapshot_for_run(episode_id, run)
+    payload["build"] = BUILD_LABEL
+    return jsonify(payload)
+
+
+def production_history_fixed():
+    return jsonify({"items": _history_rows_fixed(), "build": BUILD_LABEL})
+
+
+def production_history_details_fixed(episode_id: str):
+    run = dashboard._find_run("production.yml", f"OTTAM Production {episode_id}")
+    if not run:
+        return jsonify({"error": "episode not found", "build": BUILD_LABEL}), 404
+
+    if is_script_review_checkpoint(run, episode_id):
+        snapshot = review._review_snapshot(episode_id, run)
+        return jsonify(
+            {
+                "status": "awaiting_script_approval",
+                "episode_id": episode_id,
+                "script": snapshot.get("script") or "",
+                "hook_qa": snapshot.get("hook_qa") or {},
+                "script_qa": snapshot.get("script_qa") or {},
+                "build": BUILD_LABEL,
+            }
+        )
+
+    if run.get("status") == "completed" and run.get("conclusion") == "success":
+        snapshot = cold._snapshot_without_blocking(episode_id, run)
+        if snapshot.get("ready"):
+            return jsonify(
+                {
+                    "status": "ready",
+                    "episode_id": episode_id,
+                    "package": snapshot.get("package") or {},
+                    "video_url": f"/files/{episode_id}/video",
+                    "thumbnail_url": f"/files/{episode_id}/thumbnail",
+                    "captions_url": f"/files/{episode_id}/captions",
+                    "build": BUILD_LABEL,
+                }
+            )
+        return jsonify(
+            {
+                "status": "restoring",
+                "episode_id": episode_id,
+                "message": (snapshot.get("progress") or {}).get("current_stage") or "Restoring completed assets from GitHub",
+                "build": BUILD_LABEL,
+            }
+        )
+
+    snapshot = dashboard._production_snapshot(episode_id, run=run)
+    return jsonify(
+        {
+            "status": "failed" if run.get("status") == "completed" else "in_progress",
+            "episode_id": episode_id,
+            "failure": snapshot.get("failure") or {},
+            "run_url": run.get("html_url"),
+            "build": BUILD_LABEL,
+        }
+    )
+
+
+# Override the actual Flask endpoints last, after all composition modules have
+# registered their routes. This removes import-order/monkey-patch ambiguity.
+dashboard.app.view_functions["current_job"] = current_job_fixed
+dashboard.app.view_functions["job_status"] = job_status_fixed
+dashboard.app.view_functions["production_history"] = production_history_fixed
+dashboard.app.view_functions["production_history_details"] = production_history_details_fixed
+
+
+@dashboard.app.get("/api/build")
+def dashboard_build():
+    return jsonify({"build": BUILD_LABEL})
