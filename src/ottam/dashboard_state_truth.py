@@ -221,10 +221,9 @@ dashboard.PAGE = dashboard.PAGE.replace(
 # The original script-review block is physically before the main dashboard JS,
 # so its first attempt to wrap showJob can run too early. This late bridge is
 # appended after every existing script and installs only when showJob exists.
+# History deletion is intentionally owned only by dashboard_run_control; do not
+# add another Delete button here.
 _STATE_TRUTH_JS = r'''
-<style>
-.historyDeleteV2{background:#3d1d21!important;color:#ffb3b0!important;border-color:#6e2b31!important}
-</style>
 <script>
 (function(){
   function installReviewBridge(){
@@ -257,25 +256,8 @@ _STATE_TRUTH_JS = r'''
     }catch(e){console.error('OTTAM reconcile failed',e)}
   }
 
-  function addDeleteButtons(){
-    document.querySelectorAll('.historyItem').forEach(card=>{
-      if(card.querySelector('.historyDeleteV2'))return;
-      const meta=card.querySelector('.historyMeta')?.textContent||'';
-      const m=meta.match(/(OTTAM-[A-Za-z0-9-]+)/); if(!m)return;
-      const actions=card.querySelector('.historyActions'); if(!actions)return;
-      const button=document.createElement('button'); button.className='historyDeleteV2'; button.textContent='Delete';
-      button.onclick=async()=>{
-        if(!confirm('Remove this episode from OTTAM history? The GitHub artifact will be kept.'))return;
-        button.disabled=true; button.textContent='Removing…';
-        try{const r=await fetch('/api/history/'+encodeURIComponent(m[1])+'/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!r.ok)throw new Error(await r.text());card.remove()}catch(e){button.disabled=false;button.textContent='Delete';alert(e.message)}
-      };
-      actions.appendChild(button);
-    });
-  }
-
   setTimeout(reconcile,50);
   setTimeout(reconcile,1000);
-  setInterval(addDeleteButtons,700);
 })();
 </script>
 '''
