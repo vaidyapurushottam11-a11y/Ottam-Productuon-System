@@ -9,6 +9,7 @@ from . import dashboard_review_direct  # noqa: F401 - final live request-path ov
 from . import build_info  # noqa: F401 - deployment commit verification endpoint
 from . import dashboard_run_control  # noqa: F401 - dedupe/current-run/history-delete controls
 from . import dashboard_cache_control  # noqa: F401 - prevent stale browser builds
+from . import dashboard_state_truth  # noqa: F401 - authoritative state + UI recovery
 
 app = dashboard.app
 
