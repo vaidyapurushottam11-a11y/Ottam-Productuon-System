@@ -26,3 +26,5 @@ jobs:
         run: python -m compileall -q src
       - name: Validate orchestrator imports
         run: python -c "from ottam.cli import build_handlers; from ottam.orchestrator import Stage; h=build_handlers(); assert set(h) == set(Stage)"
+      - name: Validate dashboard composition
+        run: python -c "from ottam.dashboard_app import app; assert app is not None; assert 'approve_script' in app.view_functions; assert 'production_history' in app.view_functions"

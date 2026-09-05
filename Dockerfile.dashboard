@@ -11,4 +11,4 @@ RUN python -m pip install --no-cache-dir --upgrade pip && pip install --no-cache
 RUN mkdir -p /data
 
 EXPOSE 8080
-CMD ["sh", "-c", "gunicorn --workers 2 --threads 4 --timeout 120 --bind 0.0.0.0:${PORT} ottam.dashboard:app"]
+CMD ["sh", "-c", "gunicorn --workers 2 --threads 4 --timeout 120 --bind 0.0.0.0:${PORT} ottam.dashboard_app:app"]
