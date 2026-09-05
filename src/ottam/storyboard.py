@@ -45,7 +45,7 @@ class StoryboardPlanner:
         return self.client.select_free_model(self.preferred_models).id
 
     @staticmethod
-    def _parse_json(raw: str) -> dict:
+    def _parse_object(raw: str) -> dict:
         text = raw.strip()
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*", "", text)
@@ -54,7 +54,14 @@ class StoryboardPlanner:
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
             raise RecoverableStageError(f"Storyboard model returned invalid JSON: {exc}") from exc
-        if not isinstance(payload, dict) or not isinstance(payload.get("scenes"), list):
+        if not isinstance(payload, dict):
+            raise RecoverableStageError("Storyboard model must return a JSON object")
+        return payload
+
+    @classmethod
+    def _parse_json(cls, raw: str) -> dict:
+        payload = cls._parse_object(raw)
+        if not isinstance(payload.get("scenes"), list):
             raise RecoverableStageError("Storyboard JSON must contain a scenes array")
         return payload
 
@@ -78,7 +85,7 @@ OPENING SCENES:\n{json.dumps(opening, ensure_ascii=False)}"""
             temperature=0.12,
             max_tokens=3000,
         )
-        report = self._parse_json(raw)
+        report = self._parse_object(raw)
         score_keys = (
             "relatability",
             "curiosity",
