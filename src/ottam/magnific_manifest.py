@@ -32,6 +32,8 @@ class MagnificManifestBuilder:
             items.append({
                 "scene_id": str(scene.get("scene_id") or idx),
                 "index": idx,
+                "start": float(scene.get("start") or 0.0),
+                "end": float(scene.get("end") or 0.0),
                 "filename": f"{idx:04d}.png",
                 "prompt": prompt,
                 "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
@@ -45,8 +47,9 @@ class MagnificManifestBuilder:
             })
 
         output = {
-            "version": 1,
+            "version": 2,
             "provider": "magnific",
+            "opening_hook_seconds": float(data.get("opening_hook_seconds") or 30.0),
             "generation_policy": {
                 "regenerate_failed_scene_only": True,
                 "fixed_scene_count": False,
