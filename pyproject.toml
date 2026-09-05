@@ -19,7 +19,7 @@ dependencies = [
 
 [project.scripts]
 ottam-run = "ottam.cli:main"
-ottam-dashboard = "ottam.dashboard:main"
+ottam-dashboard = "ottam.dashboard_app:main"
 ottam-upload-package = "ottam.upload_package:generate_main"
 ottam-caption-regenerate = "ottam.upload_package:regenerate_main"
 ottam-thumbnail-generate = "ottam.package_thumbnail:main"
