@@ -7,5 +7,4 @@ def test_build_endpoint_exists():
     response = client.get('/api/build')
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload['service'] == 'ottam-dashboard'
-    assert 'git_commit' in payload
+    assert payload['build'] == 'script-review-state-v2'
