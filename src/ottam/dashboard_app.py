@@ -7,6 +7,7 @@ from . import dashboard_script_review  # noqa: F401 - installs script approval r
 from . import dashboard_review_state_fix  # noqa: F401 - backwards-compatible classifier
 from . import dashboard_review_direct  # noqa: F401 - final live request-path overrides
 from . import build_info  # noqa: F401 - deployment commit verification endpoint
+from . import dashboard_run_control  # noqa: F401 - dedupe/current-run/history-delete controls
 
 app = dashboard.app
 
