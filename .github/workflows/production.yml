@@ -21,6 +21,16 @@ on:
         required: false
         default: false
         type: boolean
+      script_approved:
+        description: "Continue beyond Script QA after explicit dashboard approval"
+        required: false
+        default: false
+        type: boolean
+      script_revision_instruction:
+        description: "Optional dashboard instruction for revising the saved script before approval"
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: ottam-production
@@ -48,10 +58,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Setup · Node.js
+        if: ${{ inputs.script_approved }}
         uses: actions/setup-node@v4
         with:
           node-version: "20"
       - name: Setup · Media tools
+        if: ${{ inputs.script_approved }}
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
@@ -59,7 +71,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e .
-          npm install --no-save @modelcontextprotocol/sdk
+          if [ "${{ inputs.script_approved }}" = "true" ]; then
+            npm install --no-save @modelcontextprotocol/sdk
+          fi
 
       - name: Setup · Restore episode checkpoint
         env:
@@ -79,6 +93,8 @@ jobs:
           EPISODE_ID: ${{ inputs.episode_id }}
           SELECTED_TOPIC_JSON: ${{ inputs.selected_topic_json }}
           RESUME_FAILED: ${{ inputs.resume_failed }}
+          SCRIPT_APPROVED: ${{ inputs.script_approved }}
+          SCRIPT_REVISION_INSTRUCTION: ${{ inputs.script_revision_instruction }}
         run: |
           python - <<'PY'
           import json, os
@@ -87,28 +103,18 @@ jobs:
           episode_id = os.environ["EPISODE_ID"]
           topic = json.loads(os.environ["SELECTED_TOPIC_JSON"])
           resume_failed = os.environ.get("RESUME_FAILED", "false").lower() == "true"
+          script_approved = os.environ.get("SCRIPT_APPROVED", "false").lower() == "true"
+          revision_instruction = os.environ.get("SCRIPT_REVISION_INSTRUCTION", "").strip()
           episode_dir = Path("runtime/episodes") / episode_id
           state_dir = Path("runtime/state")
-          profile_dir = Path("config/episodes")
           episode_dir.mkdir(parents=True, exist_ok=True)
           state_dir.mkdir(parents=True, exist_ok=True)
-          profile_dir.mkdir(parents=True, exist_ok=True)
           topic_path = episode_dir / "topic.json"
           state_path = state_dir / f"{episode_id}.json"
-          profile_path = profile_dir / f"{episode_id}.yaml"
 
           if not topic_path.exists():
               topic_path.write_text(
                   json.dumps({"winner": topic, "source": "dashboard_selection"}, indent=2, ensure_ascii=False),
-                  encoding="utf-8",
-              )
-
-          # Dashboard episodes need at least an ~8 minute script, not a brittle
-          # maximum. 1900-3000 keeps the target useful while accepting a healthy
-          # longer script instead of repeatedly rewriting it.
-          if not profile_path.exists():
-              profile_path.write_text(
-                  "episode:\n  target_words:\n    min: 1900\n    max: 3000\n",
                   encoding="utf-8",
               )
 
@@ -127,14 +133,30 @@ jobs:
                   ),
                   encoding="utf-8",
               )
-          elif resume_failed:
-              state = json.loads(state_path.read_text(encoding="utf-8"))
+
+          state = json.loads(state_path.read_text(encoding="utf-8"))
+
+          if revision_instruction:
+              # A requested edit should reuse topic/research but regenerate script,
+              # fact-check and QA before asking for approval again.
+              (episode_dir / "script_revision_instruction.txt").write_text(revision_instruction, encoding="utf-8")
+              state["stage"] = "write_script"
               state["status"] = "PENDING"
               state["attempts"] = 0
               state["quarantined"] = False
               state["last_error"] = None
-              # Do not add ad-hoc fields to the core EpisodeState payload.
-              state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+          elif resume_failed:
+              state["status"] = "PENDING"
+              state["attempts"] = 0
+              state["quarantined"] = False
+              state["last_error"] = None
+          elif script_approved and state.get("status") == "AWAITING_SCRIPT_APPROVAL":
+              # Script QA already advanced the checkpoint to generate_tts.
+              state["status"] = "PENDING"
+              state["attempts"] = 0
+              state["last_error"] = None
+
+          state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
           PY
 
       - name: Setup · Detect resume stage
@@ -165,6 +187,7 @@ jobs:
           PY
 
       - name: Setup · Restore Magnific session
+        if: ${{ inputs.script_approved }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -194,32 +217,52 @@ jobs:
         if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 4 }}
         env: { OTTAM_STOP_AFTER_STAGE: script_qa }
         run: ottam-run
+
+      - name: Approval · Pause for script review
+        if: ${{ !inputs.script_approved && fromJSON(steps.resume_stage.outputs.start_index) <= 4 }}
+        env:
+          EPISODE_ID: ${{ inputs.episode_id }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          episode_id = os.environ["EPISODE_ID"]
+          path = Path("runtime/state") / f"{episode_id}.json"
+          state = json.loads(path.read_text())
+          state["status"] = "AWAITING_SCRIPT_APPROVAL"
+          state["last_error"] = None
+          state["quarantined"] = False
+          path.write_text(json.dumps(state, indent=2))
+          print("Script is ready for dashboard approval. Production will not spend TTS or image credits yet.")
+          PY
+
       - name: Stage 5/10 · Generate narration
-        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 5 }}
+        if: ${{ inputs.script_approved && fromJSON(steps.resume_stage.outputs.start_index) <= 5 }}
         env: { OTTAM_STOP_AFTER_STAGE: generate_tts }
         run: ottam-run
       - name: Stage 6/10 · Plan visuals
-        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 6 }}
+        if: ${{ inputs.script_approved && fromJSON(steps.resume_stage.outputs.start_index) <= 6 }}
         env: { OTTAM_STOP_AFTER_STAGE: plan_visuals }
         run: ottam-run
       - name: Stage 7/10 · Generate images
-        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 7 }}
+        if: ${{ inputs.script_approved && fromJSON(steps.resume_stage.outputs.start_index) <= 7 }}
         env: { OTTAM_STOP_AFTER_STAGE: generate_images }
         run: ottam-run
       - name: Stage 8/10 · Visual QA
-        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 8 }}
+        if: ${{ inputs.script_approved && fromJSON(steps.resume_stage.outputs.start_index) <= 8 }}
         env: { OTTAM_STOP_AFTER_STAGE: visual_qa }
         run: ottam-run
       - name: Stage 9/10 · Assemble video
-        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 9 }}
+        if: ${{ inputs.script_approved && fromJSON(steps.resume_stage.outputs.start_index) <= 9 }}
         env: { OTTAM_STOP_AFTER_STAGE: assemble_video }
         run: ottam-run
       - name: Stage 10/10 · Video QA
-        if: ${{ fromJSON(steps.resume_stage.outputs.start_index) <= 10 }}
+        if: ${{ inputs.script_approved && fromJSON(steps.resume_stage.outputs.start_index) <= 10 }}
         env: { OTTAM_STOP_AFTER_STAGE: video_qa }
         run: ottam-run
 
       - name: Packaging · Require VIDEO_READY
+        if: ${{ inputs.script_approved }}
         env:
           EPISODE_ID: ${{ inputs.episode_id }}
         run: |
@@ -232,12 +275,14 @@ jobs:
               raise SystemExit(f"Episode is not VIDEO_READY: {state}")
           PY
       - name: Packaging · YouTube text
+        if: ${{ inputs.script_approved }}
         run: test -f "runtime/episodes/${OTTAM_EPISODE_ID}/upload_package.json" || ottam-upload-package
       - name: Packaging · Thumbnail
+        if: ${{ inputs.script_approved }}
         run: test -f "runtime/episodes/${OTTAM_EPISODE_ID}/thumbnail.jpg" || ottam-thumbnail-generate
 
       - name: Finalize · Preserve Magnific session
-        if: always()
+        if: ${{ always() && inputs.script_approved }}
         uses: actions/upload-artifact@v4
         with:
           name: magnific-oauth-session
