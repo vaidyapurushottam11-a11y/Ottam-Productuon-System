@@ -135,8 +135,6 @@ def produce_controlled():
     title = str(topic.get("title") or "Selected topic")[:120]
     key = str(body.get("idempotency_key") or "").strip()
     if not key:
-        # Older clients still get backend protection against an already-visible
-        # active run. New clients always send a stable key for the selected card.
         key = f"legacy-{secrets.token_hex(12)}"
 
     with _dispatch_lock:
@@ -193,7 +191,7 @@ def _hidden_history_ids() -> set[str]:
 def production_history_controlled():
     hidden = _hidden_history_ids()
     rows = [row for row in review.history_rows_direct() if row.get("episode_id") not in hidden]
-    return jsonify({"items": rows, "hidden_count": len(hidden), "build": "run-control-v1"})
+    return jsonify({"items": rows, "hidden_count": len(hidden), "build": "script-review-state-v2", "run_control_build": "run-control-v1"})
 
 
 def delete_history_episode(episode_id: str):
@@ -209,7 +207,6 @@ def delete_history_episode(episode_id: str):
     )
 
 
-# Install the final live request handlers after the review/cold-recovery modules.
 dashboard.app.view_functions["produce"] = produce_controlled
 dashboard.app.view_functions["current_job"] = current_job_controlled
 dashboard.app.view_functions["job_status"] = job_status_controlled
@@ -279,8 +276,6 @@ function enhanceHistory(root=document){
   });
 }
 const observer=new MutationObserver(()=>enhanceHistory()); const history=document.getElementById('historyList'); if(history)observer.observe(history,{childList:true,subtree:true}); enhanceHistory();
-// The legacy restore may have selected a cancelled duplicate from localStorage.
-// Reconcile once more against the server's meaningful current run.
 setTimeout(recoverMeaningfulCurrent,250);
 })();
 </script>
