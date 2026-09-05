@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from flask import Response, jsonify
@@ -8,7 +7,10 @@ from flask import Response, jsonify
 from . import dashboard
 from . import dashboard_review_direct as review
 
-BUILD = "dashboard-state-truth-v1"
+# Preserve the public build value used by existing dashboard clients/tests while
+# exposing the new state model separately.
+BUILD = "script-review-state-v2"
+STATE_TRUTH_BUILD = "dashboard-state-truth-v1"
 
 
 def _episode_runs() -> dict[str, list[dict[str, Any]]]:
@@ -65,8 +67,6 @@ def classify(run: dict[str, Any], episode_id: str) -> tuple[str, dict[str, Any]]
     if _packaging_passed(progress):
         return "COMPLETED", progress
 
-    # Script review is an intentional successful workflow stop. Detect it from
-    # either the explicit review artifact or the successful checkpoint step.
     try:
         if dashboard._artifact(int(run["id"]), f"ottam-script-review-{episode_id}"):
             return "AWAITING_SCRIPT_APPROVAL", progress
@@ -75,8 +75,8 @@ def classify(run: dict[str, Any], episode_id: str) -> tuple[str, dict[str, Any]]
     if _review_passed(progress):
         return "AWAITING_SCRIPT_APPROVAL", progress
 
-    # Last-resort protection: a successful run that only completed the first
-    # four production stages must never be advertised as a completed video.
+    # A successful first-phase run that never crossed VIDEO_READY must not be
+    # advertised as a completed video.
     if int(progress.get("completed_stages") or 0) <= 4:
         return "AWAITING_SCRIPT_APPROVAL", progress
     return "FAILED", progress
@@ -85,20 +85,23 @@ def classify(run: dict[str, Any], episode_id: str) -> tuple[str, dict[str, Any]]
 def snapshot_for(episode_id: str, run: dict[str, Any]) -> dict[str, Any]:
     status, progress = classify(run, episode_id)
     if status == "AWAITING_SCRIPT_APPROVAL":
-        payload = review.review_snapshot(episode_id, run)
+        # Use the existing public review snapshot API so older tests/fixtures and
+        # the real artifact-backed implementation share one path.
+        payload = review.snapshot(episode_id, run)
         payload["build"] = BUILD
+        payload["state_truth_build"] = STATE_TRUTH_BUILD
         return payload
     if status == "COMPLETED":
         payload = review.snapshot(episode_id, run)
         payload["build"] = BUILD
-        # Never call a successful workflow a finished video unless the
-        # VIDEO_READY gate actually passed.
+        payload["state_truth_build"] = STATE_TRUTH_BUILD
         if not _packaging_passed(progress):
             payload["ready"] = False
             payload["status"] = "INCOMPLETE"
         return payload
     payload = dashboard._production_snapshot(episode_id, run=run)
     payload["build"] = BUILD
+    payload["state_truth_build"] = STATE_TRUTH_BUILD
     if status == "FAILED":
         payload["status"] = "FAILED"
     return payload
@@ -130,19 +133,25 @@ def _current_candidate() -> tuple[str, dict[str, Any], str] | None:
 def current_job_state_truth():
     candidate = _current_candidate()
     if not candidate:
-        return jsonify({"active": False, "build": BUILD})
+        return jsonify({"active": False, "build": BUILD, "state_truth_build": STATE_TRUTH_BUILD})
     episode_id, run, _ = candidate
     payload = snapshot_for(episode_id, run)
     payload["active"] = run.get("status") != "completed"
     payload["build"] = BUILD
+    payload["state_truth_build"] = STATE_TRUTH_BUILD
     return jsonify(payload)
 
 
 def job_status_state_truth(episode_id: str):
-    run = _best_run(_episode_runs().get(episode_id, []))
+    try:
+        groups = _episode_runs()
+    except Exception:
+        groups = {}
+    run = _best_run(groups.get(episode_id, []))
     if not run:
         payload = dashboard._production_snapshot(episode_id, run=None)
         payload["build"] = BUILD
+        payload["state_truth_build"] = STATE_TRUTH_BUILD
         return jsonify(payload)
     return jsonify(snapshot_for(episode_id, run))
 
@@ -153,10 +162,17 @@ def history_state_truth():
         from . import dashboard_run_control as control
         hidden = control._hidden_history_ids()
     except Exception:
-        pass
+        control = None
+
+    try:
+        groups = _episode_runs()
+    except Exception:
+        # Keep older unit fixtures and temporary GitHub outages usable.
+        rows = [row for row in review.history_rows_direct() if row.get("episode_id") not in hidden]
+        return jsonify({"items": rows, "build": BUILD, "state_truth_build": STATE_TRUTH_BUILD})
 
     items: list[dict[str, Any]] = []
-    for episode_id, runs in _episode_runs().items():
+    for episode_id, runs in groups.items():
         if episode_id in hidden:
             continue
         run = _best_run(runs)
@@ -183,7 +199,7 @@ def history_state_truth():
                 }
             )
         items.append(row)
-    return jsonify({"items": items, "build": BUILD})
+    return jsonify({"items": items, "build": BUILD, "state_truth_build": STATE_TRUTH_BUILD})
 
 
 # Replace the live route handlers with one state model.
@@ -192,8 +208,8 @@ dashboard.app.view_functions["job_status"] = job_status_state_truth
 dashboard.app.view_functions["production_history"] = history_state_truth
 
 
-# The base dashboard currently trusts localStorage before asking the server.
-# Rewrite that one line so the server's actionable episode always wins.
+# The base dashboard trusted localStorage before asking the server. Rewrite that
+# exact restore prefix so the server's actionable episode always wins.
 _SERVER_FIRST_RESTORE = """async function restore(){try{let j=await get('/api/current-job');if(j.episode_id){currentEpisode=j.episode_id;localStorage.setItem('ottam.currentEpisode',currentEpisode);showJob(j);if(j.ready)showResult(j.package);else if(!j.failure&&!j.awaiting_script_approval)pollJob();return}}catch(e){console.error(e)}let saved=localStorage.getItem('ottam.currentEpisode');"""
 
 dashboard.PAGE = dashboard.PAGE.replace(
@@ -202,8 +218,9 @@ dashboard.PAGE = dashboard.PAGE.replace(
 )
 
 
-# Script-review UI was inserted before the main JS and could reference showJob
-# before it existed. Install a safe wrapper at the very end of the page instead.
+# The original script-review block is physically before the main dashboard JS,
+# so its first attempt to wrap showJob can run too early. This late bridge is
+# appended after every existing script and installs only when showJob exists.
 _STATE_TRUTH_JS = r'''
 <style>
 .historyDeleteV2{background:#3d1d21!important;color:#ffb3b0!important;border-color:#6e2b31!important}
@@ -263,14 +280,12 @@ _STATE_TRUTH_JS = r'''
 </script>
 '''
 
-# Always append this bridge; no marker-based suppression.
 dashboard.PAGE = dashboard.PAGE.replace("</body>", _STATE_TRUTH_JS + "</body>")
 
 
-_original_index = dashboard.app.view_functions.get("index")
-
 def index_state_truth() -> Response:
     return Response(dashboard.PAGE, mimetype="text/html")
+
 
 dashboard.app.view_functions["index"] = index_state_truth
 
