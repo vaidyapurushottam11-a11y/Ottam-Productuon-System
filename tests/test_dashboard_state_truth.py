@@ -55,11 +55,12 @@ def test_review_beats_newer_cancelled_failure_for_current(monkeypatch):
     assert candidate[2] == "AWAITING_SCRIPT_APPROVAL"
 
 
-def test_dashboard_html_is_server_first_and_has_direct_delete_bridge():
+def test_dashboard_html_is_server_first_and_uses_single_history_delete_owner():
     html = dashboard.PAGE
     assert "dashboard-state-truth-v1" in html or "OTTAM reconcile failed" in html
     assert "fetch('/api/current-job'" in html
-    assert "historyDeleteV2" in html
+    assert "historyDelete" in html
+    assert "historyDeleteV2" not in html
     # The server-first replacement must appear before the legacy localStorage lookup.
     restore_pos = html.find("async function restore()")
     assert restore_pos >= 0
