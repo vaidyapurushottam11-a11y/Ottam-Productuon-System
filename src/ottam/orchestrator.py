@@ -122,6 +122,7 @@ class Orchestrator:
         handler = self.handlers.get(state.stage)
         if handler is None:
             raise QuarantineEpisode(f"No handler registered for stage {state.stage.value}")
+        last_error: str | None = None
         for attempt in range(1, self.max_stage_attempts + 1):
             state.attempts = attempt
             self.store.save(state)
@@ -129,7 +130,11 @@ class Orchestrator:
                 handler(state.episode_id)
                 return
             except RecoverableStageError as exc:
-                state.last_error = str(exc)
+                last_error = str(exc)
+                state.last_error = last_error
                 self.store.save(state)
                 log.warning("Recoverable failure episode=%s stage=%s attempt=%s/%s error=%s", state.episode_id, state.stage.value, attempt, self.max_stage_attempts, exc)
-        raise QuarantineEpisode(f"Stage {state.stage.value} exhausted {self.max_stage_attempts} recovery attempts")
+        suffix = f". Last error: {last_error}" if last_error else ""
+        raise QuarantineEpisode(
+            f"Stage {state.stage.value} exhausted {self.max_stage_attempts} recovery attempts{suffix}"
+        )

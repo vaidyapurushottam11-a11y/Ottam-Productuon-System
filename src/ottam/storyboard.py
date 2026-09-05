@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -34,8 +35,21 @@ OPENING RETENTION CONTRACT:
 
 
 class StoryboardPlanner:
+    """Plan a long-form storyboard in small checkpointed timing chunks.
+
+    The old implementation requested an entire 6-15 minute storyboard as one
+    very large streamed JSON response. Long xKiro streams can be interrupted or
+    truncated, forcing the whole stage to restart. Chunking keeps each response
+    small and lets stage retries reuse every chunk that already validated.
+    """
+
     MAX_AUTO_TIMING_ADJUSTMENT = 2.0
     HOOK_WINDOW_SECONDS = 30.0
+    CHUNK_TARGET_SECONDS = 75.0
+    CHUNK_MAX_SENTENCES = 28
+    CHUNK_ATTEMPTS = 2
+    CHUNK_MAX_TOKENS = 5000
+    CHUNK_FORMAT_VERSION = "sentence-ranges-v1"
 
     def __init__(self, preferred_models: list[str]):
         self.client = XKiroClient()
@@ -51,7 +65,7 @@ class StoryboardPlanner:
             text = re.sub(r"^```(?:json)?\s*", "", text)
             text = re.sub(r"\s*```$", "", text)
         try:
-            payload = json.loads(text)
+            payload = json.loads(text, strict=False)
         except json.JSONDecodeError as exc:
             raise RecoverableStageError(f"Storyboard model returned invalid JSON: {exc}") from exc
         if not isinstance(payload, dict):
@@ -142,6 +156,224 @@ OPENING SCENES:\n{json.dumps(opening, ensure_ascii=False)}"""
                 scene["scene_description"] = new_description
         return scenes
 
+    @staticmethod
+    def _cue_number(cue: dict) -> int:
+        try:
+            return int(cue["index"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RecoverableStageError("Kokoro sentence timing is missing a numeric index") from exc
+
+    @staticmethod
+    def _cue_time(cue: dict, key: str) -> float:
+        try:
+            return float(cue[key])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RecoverableStageError(f"Kokoro sentence timing is missing numeric {key}") from exc
+
+    def _timing_chunks(self, timings: list[dict]) -> list[list[dict]]:
+        if not isinstance(timings, list) or not timings:
+            raise QuarantineEpisode("Storyboard requires non-empty audio/sentences.json timings")
+        chunks: list[list[dict]] = []
+        current: list[dict] = []
+        for cue in timings:
+            self._cue_number(cue)
+            self._cue_time(cue, "start")
+            self._cue_time(cue, "end")
+            if current:
+                span = self._cue_time(cue, "end") - self._cue_time(current[0], "start")
+                if len(current) >= self.CHUNK_MAX_SENTENCES or span > self.CHUNK_TARGET_SECONDS:
+                    chunks.append(current)
+                    current = []
+            current.append(cue)
+        if current:
+            chunks.append(current)
+        return chunks
+
+    def _chunk_fingerprint(self, cues: list[dict], chunk_end: float) -> str:
+        compact = {
+            "format": self.CHUNK_FORMAT_VERSION,
+            "end": round(chunk_end, 3),
+            "cues": [
+                {
+                    "index": self._cue_number(c),
+                    "start": round(self._cue_time(c, "start"), 3),
+                    "end": round(self._cue_time(c, "end"), 3),
+                    "text": str(c.get("text") or ""),
+                }
+                for c in cues
+            ],
+        }
+        return hashlib.sha256(json.dumps(compact, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _chunk_cache_path(episode_dir: Path, chunk_index: int) -> Path:
+        return episode_dir / "storyboard_chunks" / f"chunk_{chunk_index:03d}.json"
+
+    def _load_cached_chunk(self, episode_dir: Path, chunk_index: int, fingerprint: str) -> list[dict] | None:
+        path = self._chunk_cache_path(episode_dir, chunk_index)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if payload.get("fingerprint") != fingerprint or not isinstance(payload.get("scenes"), list):
+            return None
+        return payload["scenes"]
+
+    def _save_cached_chunk(self, episode_dir: Path, chunk_index: int, fingerprint: str, scenes: list[dict]) -> None:
+        path = self._chunk_cache_path(episode_dir, chunk_index)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"format": self.CHUNK_FORMAT_VERSION, "fingerprint": fingerprint, "scenes": scenes},
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    def _materialize_chunk_scenes(self, raw_scenes: list[dict], cues: list[dict], chunk_end: float) -> list[dict]:
+        if not raw_scenes:
+            raise RecoverableStageError("Storyboard chunk contains no scenes")
+        first_index = self._cue_number(cues[0])
+        last_index = self._cue_number(cues[-1])
+        cue_by_index = {self._cue_number(cue): cue for cue in cues}
+        normalized_ranges: list[tuple[int, int, dict]] = []
+        expected = first_index
+        for pos, scene in enumerate(raw_scenes, 1):
+            try:
+                first = int(scene["first_sentence_index"])
+                last = int(scene["last_sentence_index"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RecoverableStageError(f"Storyboard chunk scene {pos} is missing sentence range indexes") from exc
+            if first != expected:
+                raise RecoverableStageError(
+                    f"Storyboard chunk sentence ranges are not contiguous: expected {expected}, got {first}"
+                )
+            if last < first or last > last_index:
+                raise RecoverableStageError(f"Storyboard chunk scene {pos} has invalid sentence range {first}-{last}")
+            if first not in cue_by_index or last not in cue_by_index:
+                raise RecoverableStageError(f"Storyboard chunk scene {pos} references a sentence outside this chunk")
+            normalized_ranges.append((first, last, scene))
+            expected = last + 1
+        if expected != last_index + 1:
+            raise RecoverableStageError(
+                f"Storyboard chunk did not cover all sentences; expected through {last_index}, stopped at {expected - 1}"
+            )
+
+        scenes: list[dict] = []
+        for pos, (first, last, scene) in enumerate(normalized_ranges):
+            start = self._cue_time(cue_by_index[first], "start")
+            if pos + 1 < len(normalized_ranges):
+                next_first = normalized_ranges[pos + 1][0]
+                end = self._cue_time(cue_by_index[next_first], "start")
+            else:
+                end = float(chunk_end)
+            if end <= start:
+                raise RecoverableStageError(f"Storyboard chunk produced non-positive scene duration at sentence {first}")
+            description = str(scene.get("scene_description") or "").strip()
+            if not description:
+                raise RecoverableStageError(f"Storyboard chunk returned empty scene_description at sentence {first}")
+            allowed_text = scene.get("allowed_text")
+            if allowed_text is not None:
+                allowed_text = str(allowed_text).strip() or None
+                if allowed_text and len(allowed_text.split()) > 4:
+                    allowed_text = None
+            motion = str(scene.get("motion") or "static").strip()
+            if motion not in {"static", "push_in", "pull_out", "pan_left", "pan_right"}:
+                motion = "static"
+            transition = str(scene.get("transition") or "cut").strip()
+            if transition not in {"cut", "dissolve"}:
+                transition = "cut"
+            narration = " ".join(str(cue_by_index[i].get("text") or "").strip() for i in range(first, last + 1)).strip()
+            scenes.append(
+                {
+                    "scene_id": len(scenes) + 1,
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                    "narration": narration,
+                    "scene_description": description,
+                    "allowed_text": allowed_text,
+                    "motion": motion,
+                    "transition": transition,
+                    "first_sentence_index": first,
+                    "last_sentence_index": last,
+                }
+            )
+        return scenes
+
+    def _generate_chunk(
+        self,
+        *,
+        model: str,
+        cues: list[dict],
+        chunk_index: int,
+        chunk_count: int,
+        chunk_end: float,
+    ) -> list[dict]:
+        first_index = self._cue_number(cues[0])
+        last_index = self._cue_number(cues[-1])
+        timing_payload = [
+            {
+                "index": self._cue_number(cue),
+                "start": round(self._cue_time(cue, "start"), 3),
+                "end": round(self._cue_time(cue, "end"), 3),
+                "text": str(cue.get("text") or ""),
+            }
+            for cue in cues
+        ]
+        opening_note = (
+            "This chunk contains the opening hook. Make its first 30 seconds especially relatable, emotionally active, "
+            "curiosity-driving and phone-readable. "
+            if chunk_index == 1
+            else ""
+        )
+        prompt = f"""Create storyboard scene GROUPINGS for chunk {chunk_index} of {chunk_count} of one OTTAM episode.
+{opening_note}
+Return STRICT JSON only with this shape:
+{{
+  "scenes": [
+    {{
+      "first_sentence_index": {first_index},
+      "last_sentence_index": {first_index + 1},
+      "scene_description": "scene-specific shot/composition/action only",
+      "allowed_text": null,
+      "motion": "push_in",
+      "transition": "cut"
+    }}
+  ]
+}}
+
+Rules:
+1. Cover every sentence index from {first_index} through {last_index} exactly once, in order, using contiguous non-overlapping ranges. No skipped or repeated sentence indexes.
+2. Do NOT output start/end times and do NOT repeat narration text. Code calculates exact timing and narration deterministically.
+3. Group adjacent sentence cues when one visual idea can cover them naturally. Prefer roughly 4-8 seconds per visual from the supplied cue timings, but allow 1-3 second beats or 9-15 second holds where the story needs them.
+4. scene_description must specify a concrete shot/composition, recurring stickman action/expression, simple props/background and useful color separation. Preserve the same recurring OTTAM character identity; vary pose/expression/framing, not anatomy/design.
+5. allowed_text should normally be null. If exact visible wording is essential, use only one short word or phrase.
+6. motion must be one of static, push_in, pull_out, pan_left, pan_right. transition must be cut or dissolve; prefer cut.
+7. Do not include global style boilerplate; code adds the locked OTTAM style.
+8. Avoid generic diagrams or passive filler. Every scene should add recognition, tension, explanation, contrast or payoff.
+9. The last scene must include sentence {last_index}. The chunk visual coverage will end at {chunk_end:.3f}s.
+
+KOKORO CUES:\n{json.dumps(timing_payload, ensure_ascii=False)}"""
+        last_error: RecoverableStageError | None = None
+        for attempt in range(1, self.CHUNK_ATTEMPTS + 1):
+            try:
+                raw = self.client.chat_stream(
+                    model=model,
+                    messages=[{"role": "system", "content": STORYBOARD_SYSTEM}, {"role": "user", "content": prompt}],
+                    temperature=0.4 if attempt == 1 else 0.2,
+                    max_tokens=self.CHUNK_MAX_TOKENS,
+                )
+                payload = self._parse_json(raw)
+                return self._materialize_chunk_scenes(payload["scenes"], cues, chunk_end)
+            except RecoverableStageError as exc:
+                last_error = exc
+        raise RecoverableStageError(
+            f"Storyboard chunk {chunk_index}/{chunk_count} failed after {self.CHUNK_ATTEMPTS} attempts: {last_error}"
+        )
+
     def _normalize_scenes(self, scenes: list[dict]) -> list[dict]:
         previous_end: float | None = None
         for index, scene in enumerate(scenes, 1):
@@ -194,53 +426,31 @@ OPENING SCENES:\n{json.dumps(opening, ensure_ascii=False)}"""
         if not script_path.exists() or not timings_path.exists():
             raise QuarantineEpisode("Storyboard requires script.txt and audio/sentences.json")
 
-        script = script_path.read_text(encoding="utf-8")
         timings = json.loads(timings_path.read_text(encoding="utf-8"))
+        chunks = self._timing_chunks(timings)
         model = self._model()
-        prompt = f"""Create the complete OTTAM storyboard from the narration and sentence timing data below.
+        all_scenes: list[dict] = []
+        for index, cues in enumerate(chunks, 1):
+            if index < len(chunks):
+                chunk_end = self._cue_time(chunks[index][0], "start")
+            else:
+                chunk_end = self._cue_time(cues[-1], "end")
+            fingerprint = self._chunk_fingerprint(cues, chunk_end)
+            scenes = self._load_cached_chunk(episode_dir, index, fingerprint)
+            if scenes is None:
+                scenes = self._generate_chunk(
+                    model=model,
+                    cues=cues,
+                    chunk_index=index,
+                    chunk_count=len(chunks),
+                    chunk_end=chunk_end,
+                )
+                self._save_cached_chunk(episode_dir, index, fingerprint, scenes)
+            all_scenes.extend(scenes)
 
-Return STRICT JSON only, with this shape:
-{{
-  "scenes": [
-    {{
-      "scene_id": 1,
-      "start": 0.0,
-      "end": 5.2,
-      "narration": "exact narration covered by this scene",
-      "scene_description": "only the scene-specific composition; do not include global style boilerplate",
-      "allowed_text": null,
-      "motion": "push_in",
-      "transition": "cut"
-    }}
-  ]
-}}
-
-Rules:
-1. Cover the full narration continuously from the first spoken timestamp to the final one. No gaps.
-2. Combine adjacent short sentence cues when one visual idea can cover them cleanly.
-3. Split a long sentence only if it contains clearly different visual ideas.
-4. Target a natural visual rhythm, usually 4-8 seconds, but do not force timing mechanically.
-5. Reuse named scene contexts when appropriate.
-6. scene_description should specify shot/composition, subject action, simple props/background, and flat color-wash ideas where relevant.
-7. allowed_text must normally be null. If exact visible wording is essential, it may contain ONE short word or phrase only.
-8. motion must be one of: static, push_in, pull_out, pan_left, pan_right.
-9. transition must be one of: cut, dissolve. Prefer cut.
-10. Do not include Magnific/global style boilerplate in scene_description; code adds the locked OTTAM style automatically.
-11. FIRST 30 SECONDS: treat these scenes as premium hook frames. Start with a recognizable human situation and strong emotional action. Use large readable subjects and varied close/medium compositions. Avoid tiny centered characters, passive diagrams, choice-card grids, distant landscapes and low-contrast generic scenes.
-
-SCRIPT:\n{script}\n\nKOKORO SENTENCE TIMINGS:\n{json.dumps(timings, ensure_ascii=False)}"""
-
-        raw = self.client.chat_stream(
-            model=model,
-            messages=[{"role": "system", "content": STORYBOARD_SYSTEM}, {"role": "user", "content": prompt}],
-            temperature=0.45,
-            max_tokens=16000,
-        )
-        payload = self._parse_json(raw)
-        scenes = payload["scenes"]
+        scenes = self._normalize_scenes(all_scenes)
         if not scenes:
             raise RecoverableStageError("Storyboard contains no scenes")
-        scenes = self._normalize_scenes(scenes)
 
         first_report = self._audit_opening(scenes)
         history = [first_report]
@@ -257,12 +467,16 @@ SCRIPT:\n{script}\n\nKOKORO SENTENCE TIMINGS:\n{json.dumps(timings, ensure_ascii
                 )
 
         self._attach_prompts(scenes)
-        payload["scenes"] = scenes
-        payload["model"] = model
-        payload["style_contract"] = "verified_episode_05_prompt_shell_v1"
-        payload["scene_count"] = len(scenes)
-        payload["opening_hook_seconds"] = self.HOOK_WINDOW_SECONDS
-        payload["opening_visual_qa"] = {"passed": True, "history": history}
+        payload = {
+            "scenes": scenes,
+            "model": model,
+            "style_contract": "verified_episode_05_prompt_shell_v1",
+            "scene_count": len(scenes),
+            "opening_hook_seconds": self.HOOK_WINDOW_SECONDS,
+            "opening_visual_qa": {"passed": True, "history": history},
+            "planner": "checkpointed_storyboard_chunks_v1",
+            "chunk_count": len(chunks),
+        }
         (episode_dir / "hook_visual_qa.json").write_text(
             json.dumps(payload["opening_visual_qa"], indent=2, ensure_ascii=False), encoding="utf-8"
         )

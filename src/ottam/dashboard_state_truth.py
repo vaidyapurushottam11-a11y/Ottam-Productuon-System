@@ -32,6 +32,15 @@ def _best_run(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
     return meaningful or runs[0]
 
 
+def _hidden_episode_ids() -> set[str]:
+    """History deletion also removes an episode from automatic current selection."""
+    try:
+        from . import dashboard_run_control as control
+        return control._hidden_history_ids()
+    except Exception:
+        return set()
+
+
 def _progress(run: dict[str, Any]) -> dict[str, Any]:
     try:
         return dashboard._run_progress(run)
@@ -111,6 +120,7 @@ def _current_candidate() -> tuple[str, dict[str, Any], str] | None:
     groups = _episode_runs()
     if not groups:
         return None
+    hidden = _hidden_episode_ids()
     candidates: list[tuple[int, int, str, dict[str, Any], str]] = []
     rank = {
         "IN_PROGRESS": 0,
@@ -119,6 +129,8 @@ def _current_candidate() -> tuple[str, dict[str, Any], str] | None:
         "COMPLETED": 3,
     }
     for order, (episode_id, runs) in enumerate(groups.items()):
+        if episode_id in hidden:
+            continue
         run = _best_run(runs)
         if not run:
             continue
@@ -157,12 +169,7 @@ def job_status_state_truth(episode_id: str):
 
 
 def history_state_truth():
-    hidden: set[str] = set()
-    try:
-        from . import dashboard_run_control as control
-        hidden = control._hidden_history_ids()
-    except Exception:
-        control = None
+    hidden = _hidden_episode_ids()
 
     try:
         groups = _episode_runs()
