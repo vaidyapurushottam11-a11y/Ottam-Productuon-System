@@ -11,6 +11,7 @@ from . import dashboard_run_control  # noqa: F401 - dedupe/current-run/history-d
 from . import dashboard_cache_control  # noqa: F401 - prevent stale browser builds
 from . import dashboard_state_truth  # noqa: F401 - authoritative state + UI recovery
 from . import dashboard_script_review_controls  # noqa: F401 - late-bound review button controller
+from . import dashboard_script_approval_fix  # noqa: F401 - idempotent approval + prefer active continuation
 
 app = dashboard.app
 
