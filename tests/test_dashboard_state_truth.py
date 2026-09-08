@@ -55,12 +55,40 @@ def test_review_beats_newer_cancelled_failure_for_current(monkeypatch):
     assert candidate[2] == "AWAITING_SCRIPT_APPROVAL"
 
 
+def test_in_progress_run_beats_newer_pending_duplicate_for_same_episode(monkeypatch):
+    episode = "OTTAM-20260908-121706-EE1F"
+    pending = _run(episode, status="pending", conclusion=None, rid=34233559771)
+    running = _run(episode, status="in_progress", conclusion=None, rid=34233089186)
+    # GitHub's runs endpoint is newest-first, so the accidental pending duplicate
+    # appears before the run that is actually doing work.
+    monkeypatch.setattr(dashboard, "_runs", lambda workflow: [pending, running] if workflow == "production.yml" else [])
+    monkeypatch.setattr(
+        dashboard,
+        "_run_progress",
+        lambda r: {
+            "timeline": [{"name": "Stage 6/10 · Plan visuals", "status": "in_progress", "conclusion": None}],
+            "completed_stages": 1,
+            "current_stage": "Stage 6/10 · Plan visuals",
+            "stage_index": 6,
+        },
+    )
+
+    selected = truth._best_run([pending, running])
+    assert selected is running
+
+    candidate = truth._current_candidate()
+    assert candidate is not None
+    assert candidate[0] == episode
+    assert candidate[1]["id"] == 34233089186
+
+
 def test_dashboard_html_is_server_first_and_uses_single_history_delete_owner():
     html = dashboard.PAGE
-    assert "dashboard-state-truth-v1" in html or "OTTAM reconcile failed" in html
-    assert "fetch('/api/current-job'" in html
+    assert "dashboard-state-truth-v2" in html
+    assert "fetch('/api/current-job" in html
     assert "historyDelete" in html
     assert "historyDeleteV2" not in html
+    assert "setInterval(reconcile,3500)" in html
     # The server-first replacement must appear before the legacy localStorage lookup.
     restore_pos = html.find("async function restore()")
     assert restore_pos >= 0

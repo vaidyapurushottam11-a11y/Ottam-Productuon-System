@@ -10,7 +10,7 @@ from . import dashboard_review_direct as review
 # Preserve the public build value used by existing dashboard clients/tests while
 # exposing the new state model separately.
 BUILD = "script-review-state-v2"
-STATE_TRUTH_BUILD = "dashboard-state-truth-v1"
+STATE_TRUTH_BUILD = "dashboard-state-truth-v2"
 
 
 def _episode_runs() -> dict[str, list[dict[str, Any]]]:
@@ -23,11 +23,35 @@ def _episode_runs() -> dict[str, list[dict[str, Any]]]:
 
 
 def _best_run(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Choose the run that represents the real production state.
+
+    GitHub returns workflow runs newest-first. A duplicate approval can therefore
+    put a newer pending/queued run before the older run that is already executing.
+    Always prefer actual in-progress work, then queued work, then meaningful
+    completed runs. This is the final selector used by the live dashboard routes.
+    """
     if not runs:
         return None
+
+    running = next((r for r in runs if r.get("status") == "in_progress"), None)
+    if running:
+        return running
+
+    queued = next(
+        (
+            r
+            for r in runs
+            if r.get("status") in {"queued", "pending", "waiting", "requested"}
+        ),
+        None,
+    )
+    if queued:
+        return queued
+
     active = next((r for r in runs if r.get("status") != "completed"), None)
     if active:
         return active
+
     meaningful = next((r for r in runs if r.get("conclusion") != "cancelled"), None)
     return meaningful or runs[0]
 
@@ -94,8 +118,6 @@ def classify(run: dict[str, Any], episode_id: str) -> tuple[str, dict[str, Any]]
 def snapshot_for(episode_id: str, run: dict[str, Any]) -> dict[str, Any]:
     status, progress = classify(run, episode_id)
     if status == "AWAITING_SCRIPT_APPROVAL":
-        # Use the existing public review snapshot API so older tests/fixtures and
-        # the real artifact-backed implementation share one path.
         payload = review.snapshot(episode_id, run)
         payload["build"] = BUILD
         payload["state_truth_build"] = STATE_TRUTH_BUILD
@@ -149,6 +171,7 @@ def current_job_state_truth():
     episode_id, run, _ = candidate
     payload = snapshot_for(episode_id, run)
     payload["active"] = run.get("status") != "completed"
+    payload["selected_run_id"] = run.get("id")
     payload["build"] = BUILD
     payload["state_truth_build"] = STATE_TRUTH_BUILD
     return jsonify(payload)
@@ -165,7 +188,9 @@ def job_status_state_truth(episode_id: str):
         payload["build"] = BUILD
         payload["state_truth_build"] = STATE_TRUTH_BUILD
         return jsonify(payload)
-    return jsonify(snapshot_for(episode_id, run))
+    payload = snapshot_for(episode_id, run)
+    payload["selected_run_id"] = run.get("id")
+    return jsonify(payload)
 
 
 def history_state_truth():
@@ -174,7 +199,6 @@ def history_state_truth():
     try:
         groups = _episode_runs()
     except Exception:
-        # Keep older unit fixtures and temporary GitHub outages usable.
         rows = [row for row in review.history_rows_direct() if row.get("episode_id") not in hidden]
         return jsonify({"items": rows, "build": BUILD, "state_truth_build": STATE_TRUTH_BUILD})
 
@@ -209,7 +233,8 @@ def history_state_truth():
     return jsonify({"items": items, "build": BUILD, "state_truth_build": STATE_TRUTH_BUILD})
 
 
-# Replace the live route handlers with one state model.
+# Replace the live route handlers with one state model. This module is imported
+# after the earlier dashboard controllers, so these handlers are authoritative.
 dashboard.app.view_functions["current_job"] = current_job_state_truth
 dashboard.app.view_functions["job_status"] = job_status_state_truth
 dashboard.app.view_functions["production_history"] = history_state_truth
@@ -225,46 +250,71 @@ dashboard.PAGE = dashboard.PAGE.replace(
 )
 
 
-# The original script-review block is physically before the main dashboard JS,
-# so its first attempt to wrap showJob can run too early. This late bridge is
-# appended after every existing script and installs only when showJob exists.
-# History deletion is intentionally owned only by dashboard_run_control; do not
-# add another Delete button here.
+# This is the final UI controller injected after all older dashboard scripts.
+# It keeps the visible card synchronized with the authoritative server-selected
+# run and forcibly hides the script-review controls once approval has moved on.
 _STATE_TRUTH_JS = r'''
+<!-- dashboard-state-truth-v2 -->
 <script>
 (function(){
+  if(window.__ottamStateTruthV2Installed)return;
+  window.__ottamStateTruthV2Installed=true;
+
+  let reconcileBusy=false;
+
   function installReviewBridge(){
-    if(typeof showJob!=='function' || window.__ottamReviewBridgeInstalled)return;
-    window.__ottamReviewBridgeInstalled=true;
+    if(typeof showJob!=='function' || window.__ottamReviewBridgeV2Installed)return;
+    window.__ottamReviewBridgeV2Installed=true;
     const original=showJob;
     showJob=window.showJob=function(j){
       original(j);
       const panel=document.getElementById('scriptReviewPanel');
-      if(!panel)return;
-      const waiting=!!j.awaiting_script_approval;
-      panel.classList.toggle('hidden',!waiting);
-      if(waiting){
-        const text=document.getElementById('scriptReviewText'); if(text)text.value=j.script||'';
-        const ws=document.getElementById('workflowState'); if(ws)ws.textContent='awaiting script approval';
-        const cs=document.getElementById('currentStage'); if(cs)cs.textContent='Script review';
-        const js=document.getElementById('jobStatus'); if(js)js.textContent='4/10 stages complete · waiting for your approval';
-        const bar=document.getElementById('bar'); if(bar)bar.style.width='40%';
+      if(panel){
+        const waiting=!!j.awaiting_script_approval;
+        panel.classList.toggle('hidden',!waiting);
+        if(waiting){
+          const text=document.getElementById('scriptReviewText'); if(text)text.value=j.script||'';
+          const ws=document.getElementById('workflowState'); if(ws)ws.textContent='awaiting script approval';
+          const cs=document.getElementById('currentStage'); if(cs)cs.textContent='Script review';
+          const js=document.getElementById('jobStatus'); if(js)js.textContent='4/10 stages complete · waiting for your approval';
+          const bar=document.getElementById('bar'); if(bar)bar.style.width='40%';
+        }else{
+          const approve=document.getElementById('approveScript');
+          const apply=document.getElementById('applyScriptChanges');
+          const reject=document.getElementById('rejectScript');
+          if(approve)approve.disabled=true;
+          if(apply)apply.disabled=true;
+          if(reject)reject.disabled=true;
+        }
       }
     };
   }
 
   async function reconcile(){
-    installReviewBridge();
+    if(reconcileBusy)return;
+    reconcileBusy=true;
     try{
-      const r=await fetch('/api/current-job',{cache:'no-store'}); if(!r.ok)return;
-      const j=await r.json(); if(!j.episode_id)return;
-      currentEpisode=j.episode_id; localStorage.setItem('ottam.currentEpisode',currentEpisode);
-      showJob(j); if(j.ready)showResult(j.package);
-    }catch(e){console.error('OTTAM reconcile failed',e)}
+      installReviewBridge();
+      const r=await fetch('/api/current-job?ui_build=dashboard-state-truth-v2',{cache:'no-store'});
+      if(!r.ok)return;
+      const j=await r.json();
+      if(!j.episode_id)return;
+      if(currentEpisode!==j.episode_id){polling=false;}
+      currentEpisode=j.episode_id;
+      localStorage.setItem('ottam.currentEpisode',currentEpisode);
+      showJob(j);
+      if(j.ready){showResult(j.package);return;}
+      if(!j.awaiting_script_approval && !j.failure && !polling && typeof pollJob==='function')pollJob();
+    }catch(e){
+      console.error('OTTAM state-truth-v2 reconcile failed',e);
+    }finally{
+      reconcileBusy=false;
+    }
   }
 
   setTimeout(reconcile,50);
-  setTimeout(reconcile,1000);
+  setTimeout(reconcile,700);
+  setInterval(reconcile,3500);
 })();
 </script>
 '''
@@ -273,7 +323,16 @@ dashboard.PAGE = dashboard.PAGE.replace("</body>", _STATE_TRUTH_JS + "</body>")
 
 
 def index_state_truth() -> Response:
-    return Response(dashboard.PAGE, mimetype="text/html")
+    return Response(
+        dashboard.PAGE,
+        mimetype="text/html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-OTTAM-UI-Build": STATE_TRUTH_BUILD,
+        },
+    )
 
 
 dashboard.app.view_functions["index"] = index_state_truth
