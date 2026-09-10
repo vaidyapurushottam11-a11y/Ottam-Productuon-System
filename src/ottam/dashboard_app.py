@@ -9,10 +9,10 @@ from . import dashboard_review_direct  # noqa: F401 - final live request-path ov
 from . import build_info  # noqa: F401 - deployment commit verification endpoint
 from . import dashboard_run_control  # noqa: F401 - dedupe/current-run/history-delete controls
 from . import dashboard_cache_control  # noqa: F401 - prevent stale browser builds
-from . import dashboard_state_truth  # noqa: F401 - authoritative state + UI recovery
+from . import dashboard_current_details_fix  # noqa: F401 - mutate PAGE with failed/current details restoration before final UI layer
 from . import dashboard_script_review_controls  # noqa: F401 - late-bound review button controller
 from . import dashboard_script_approval_fix  # noqa: F401 - idempotent approval + prefer active continuation
-from . import dashboard_current_details_fix  # noqa: F401 - restore failed/in-progress run details card
+from . import dashboard_state_truth  # noqa: F401 - FINAL authoritative state + UI layer; intentionally imported last
 
 app = dashboard.app
 
