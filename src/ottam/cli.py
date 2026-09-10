@@ -8,14 +8,14 @@ from pathlib import Path
 import yaml
 
 from .dynamic_content import build_dynamic_content_handlers, shorten_episode_for_runtime
-from .magnific_api import MagnificEpisodeGenerator, build_magnific_generate_handler
+from .magnific_api import build_magnific_generate_handler
 from .magnific_manifest import MagnificManifestBuilder
 from .orchestrator import Orchestrator, QuarantineEpisode, RecoverableStageError, Stage, StateStore
 from .render import build_render_handler
 from .storyboard import StoryboardPlanner
 from .tts import generate_episode_narration
 from .video_qa import build_video_qa_handler
-from .visual_qa import VisualQA
+from .visual_qa import build_visual_qa_handler
 
 RUNTIME_ROOT = Path("runtime/episodes")
 PREFERRED_MODELS = ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"]
@@ -67,16 +67,6 @@ def _plan_visuals(episode_id: str) -> None:
     MagnificManifestBuilder().build(episode_dir)
 
 
-def _visual_qa_handler(episode_id: str) -> None:
-    episode_dir = RUNTIME_ROOT / episode_id
-    qa = VisualQA()
-    try:
-        qa.run(episode_dir)
-    except RecoverableStageError:
-        MagnificEpisodeGenerator().generate(episode_dir)
-        qa.run(episode_dir)
-
-
 def build_handlers():
     handlers = {stage: _not_wired(stage) for stage in Stage}
     content = build_dynamic_content_handlers(RUNTIME_ROOT, PREFERRED_MODELS)
@@ -88,7 +78,7 @@ def build_handlers():
     handlers[Stage.GENERATE_TTS] = _tts_handler
     handlers[Stage.PLAN_VISUALS] = _plan_visuals
     handlers[Stage.GENERATE_IMAGES] = build_magnific_generate_handler(RUNTIME_ROOT)
-    handlers[Stage.VISUAL_QA] = _visual_qa_handler
+    handlers[Stage.VISUAL_QA] = build_visual_qa_handler(RUNTIME_ROOT)
     handlers[Stage.ASSEMBLE_VIDEO] = build_render_handler(RUNTIME_ROOT)
     handlers[Stage.VIDEO_QA] = build_video_qa_handler(RUNTIME_ROOT)
     return handlers
